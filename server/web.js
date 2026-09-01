@@ -529,6 +529,7 @@ async function route(req, res, url) {
       return json(res, {
         slug: doc.slug,
         title: doc.title,
+        hash: doc.hash,
         type: doc.type,
         tags: doc.tags,
         fields: types.fieldsOf(doc),
@@ -542,7 +543,8 @@ async function route(req, res, url) {
     if (method === 'PUT' || method === 'POST') {
       if (READONLY) return json(res, { error: 'read_only' }, 403);
       const payload = JSON.parse((await readBody(req)) || '{}');
-      return json(
+      try {
+        return json(
         res,
         await wiki.writePage(slug, payload.content ?? payload.body ?? '', {
           ...payload,
@@ -555,6 +557,16 @@ async function route(req, res, url) {
           },
         })
       );
+      } catch (err) {
+        if (err?.code === 'conflict') {
+          return json(
+            res,
+            { error: 'conflict', message: err.message, expected: err.expected, actual: err.actual, current: err.current },
+            409
+          );
+        }
+        throw err;
+      }
     }
     if (method === 'DELETE') {
       if (READONLY) return json(res, { error: 'read_only' }, 403);

@@ -283,6 +283,87 @@ await wiki.deletePage('runbooks/backup-mysql');
 await wiki.deletePage('unrelated/poetry');
 await wiki.deletePage('hosts/pve-02');
 
+// --------------------------------------------------------- concurrency ----
+console.log('\nconcurrency');
+const revisions = await import('../lib/revisions.js');
+
+const base = await wiki.readPage('hosts/pve-01');
+check('readPage exposes a content hash', /^[0-9a-f]{16}$/.test(base.hash), base.hash);
+
+// A write based on stale content must be refused, and must hand back the
+// current content so the caller can merge rather than guess.
+let conflict = null;
+try {
+  await wiki.writePage('hosts/pve-01', '# pve-01\n\nstale write', { baseHash: '0000000000000000' });
+} catch (err) {
+  conflict = err;
+}
+check('a stale write is rejected', conflict?.code === 'conflict');
+check('the conflict carries the current content', typeof conflict?.current === 'string' && conflict.current.includes('pve-01'));
+check('the conflict names both hashes', conflict?.expected === '0000000000000000' && conflict?.actual === base.hash);
+check('the page was not modified by the rejected write', (await wiki.readPage('hosts/pve-01')).hash === base.hash);
+
+const okWrite = await wiki.writePage('hosts/pve-01', '# pve-01\n\ncorrect write', { baseHash: base.hash });
+check('a write with the right base is accepted', okWrite.hash !== base.hash);
+check('writes with no baseHash still work', !!(await wiki.writePage('hosts/pve-01', '# pve-01\n\nunchecked')).hash);
+
+// The real scenario: many agents writing the same page at once. Every write
+// must either land or be cleanly rejected — none may be silently lost, and the
+// file must never be left half-written.
+await wiki.writePage('scratch/race', '# Race\n\nstart', {});
+const raceBase = await wiki.readPage('scratch/race');
+const results = await Promise.allSettled(
+  Array.from({ length: 12 }, (_, i) =>
+    wiki.writePage('scratch/race', `# Race\n\nwriter ${i}`, {
+      baseHash: raceBase.hash,
+      provenance: { via: 'mcp', agent: `agent-${i}` },
+    })
+  )
+);
+const landed = results.filter((r) => r.status === 'fulfilled').length;
+const refused = results.filter((r) => r.status === 'rejected' && r.reason?.code === 'conflict').length;
+const other = results.filter((r) => r.status === 'rejected' && r.reason?.code !== 'conflict');
+check('exactly one concurrent writer wins', landed === 1, `landed=${landed} refused=${refused}`);
+check('every other writer is told, not ignored', refused === 11, String(refused));
+check('no writer fails for an unexpected reason', other.length === 0, JSON.stringify(other.map((o) => o.reason?.message)));
+
+const after = await wiki.readPage('scratch/race');
+check('the file is intact after the race', /^# Race\n\nwriter \d+$/m.test(after.body.trim()), JSON.stringify(after.body));
+check('no temp files were left behind', !(await wiki.listSlugs()).some((s) => s.includes('.tmp')));
+
+// Unguarded concurrent writes must still not corrupt the file, even though one
+// of them will be lost — that is the documented cost of omitting baseHash.
+await Promise.allSettled(
+  Array.from({ length: 8 }, (_, i) => wiki.writePage('scratch/race', `# Race\n\nunguarded ${i}`, {}))
+);
+const afterUnguarded = await wiki.readPage('scratch/race');
+check('unguarded races still leave a valid page', /unguarded \d+/.test(afterUnguarded.body), JSON.stringify(afterUnguarded.body.slice(0, 40)));
+
+// Revisions are recorded per write, not per timer tick.
+const raceRevs = await revisions.listRevisions('scratch/race', { limit: 100 });
+check('every accepted write produced a revision', raceRevs.length >= 3, String(raceRevs.length));
+check('revisions record who wrote them', raceRevs.some((r) => r.provenance?.claimed?.agent?.startsWith('agent-')));
+check('revisions are newest first', raceRevs.every((r, i) => i === 0 || raceRevs[i - 1].at >= r.at));
+
+const created = raceRevs[raceRevs.length - 1];
+check('the first revision is a create', created.op === 'create', created.op);
+
+const rdiff = await revisions.diffOf('scratch/race', raceRevs[0].id);
+check('a diff can be computed without git', rdiff && rdiff.patch.includes('+'), JSON.stringify(rdiff?.patch?.slice(0, 60)));
+check('the diff counts changed lines', rdiff.added > 0);
+
+// Deleting keeps the last content so the page can be brought back.
+await wiki.deletePage('scratch/race');
+const afterDelete = await revisions.listRevisions('scratch/race', { limit: 5, withContent: true });
+check('deletion is recorded as a revision', afterDelete[0]?.op === 'delete', afterDelete[0]?.op);
+check('the deleted content is retained', afterDelete[0]?.raw?.includes('Race'));
+
+// Later sections rely on this fixture's body; the race tests above rewrote it.
+await wiki.writePage('hosts/pve-01', '# pve-01\n\nUpdated body.');
+
+check('history never leaks into pages', !(await wiki.listSlugs()).some((s) => s.includes('.history')));
+check('history inherits slug traversal defence', await revisions.listRevisions('../../etc/passwd').then(() => false).catch(() => true));
+
 // -------------------------------------------------------------- history ----
 console.log('\nhistory');
 const history = await import('../lib/history.js');
