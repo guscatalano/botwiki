@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly botwiki librarian pass
+
+[Timer]
+OnCalendar=Mon 07:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "botwiki": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["server/mcp.js"],
+      "env": {}
+    }
+  }
+}

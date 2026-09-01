@@ -1,0 +1,25 @@
+[Unit]
+Description=botwiki librarian — review the wiki and comment on what it finds
+Documentation=file:/opt/botwiki/librarian/run.js
+After=network-online.target botwiki-web.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=botwiki
+Group=botwiki
+WorkingDirectory=/opt/botwiki
+Environment=LIBRARIAN_CONFIG=/etc/botwiki/librarian.json
+EnvironmentFile=-/etc/botwiki.env
+ExecStart=/usr/bin/node librarian/run.js
+StandardOutput=journal
+StandardError=journal
+
+# It only ever talks to the wiki over HTTP and reads its own config.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/etc/botwiki
+RestrictSUIDSGID=yes
+LockPersonality=yes

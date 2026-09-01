@@ -1,0 +1,14 @@
+node_modules/
+*.log
+.env
+
+# Scratch files from scripted edits; never part of the project.
+*.tmp.*
+inline.tmp.js
+token.tmp.txt
+
+# Local wiki content, if anyone points WIKI_DIR at the repo. The pages that ship
+# in pages/ are generic starter examples; real content lives in $WIKI_DIR on the
+# server and is never committed here.
+/content/
+/data/

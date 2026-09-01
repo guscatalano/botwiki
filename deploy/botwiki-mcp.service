@@ -1,0 +1,28 @@
+[Unit]
+Description=botwiki MCP server (streamable HTTP)
+Documentation=file:/opt/botwiki/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botwiki
+Group=botwiki
+WorkingDirectory=/opt/botwiki
+EnvironmentFile=/etc/botwiki.env
+ExecStart=/usr/bin/node server/mcp.js --http
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/botwiki
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

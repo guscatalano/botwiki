@@ -1,0 +1,9 @@
+[Unit]
+Description=Commit botwiki page changes to git
+
+[Service]
+Type=oneshot
+User=botwiki
+Group=botwiki
+WorkingDirectory=/var/lib/botwiki/pages
+ExecStart=/usr/bin/env sh -c 'git add -A && git diff --cached --quiet || git commit -q -m "snapshot $(date -Is)"'
