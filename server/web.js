@@ -238,6 +238,8 @@ const provenanceBar = (p) => {
   const bits = [];
   if (c.agent) bits.push(`<b>${esc(c.agent)}</b>`);
   if (c.model) bits.push(`<span class="model">${esc(c.model)}</span>`);
+  const host = o.host || c.host;
+  if (host) bits.push(`on <b>${esc(host)}</b>`);
   if (o.ip) bits.push(`from <code>${esc(o.ip)}</code>`);
   if (o.via) bits.push(`via ${esc(o.via)}`);
   if (!bits.length) return '';
@@ -553,6 +555,7 @@ async function route(req, res, url) {
             ip: clientIp(req),
             agent: payload.agent || req.headers['user-agent'] || 'http client',
             model: payload.model,
+            host: payload.host,
             context: payload.context,
           },
         })

@@ -8,25 +8,41 @@
     "",
     "The librarian only ever COMMENTS. It does not edit or delete pages."
   ],
-
   "wiki": {
     "baseUrl": "http://127.0.0.1:8787",
     "tokenFile": null
   },
-
   "author": "librarian",
   "model": "rule-based",
-
   "checks": {
-    "stale": { "enabled": true, "commentOn": "stale" },
-    "conformance": { "enabled": true },
-    "brokenLinks": { "enabled": true },
-    "orphans": { "enabled": true },
-    "missingLinks": { "enabled": true, "minStrength": 0.55 },
-    "probes": { "enabled": true },
-    "review": { "enabled": true, "page": "meta/review" }
+    "stale": {
+      "enabled": true,
+      "commentOn": "stale"
+    },
+    "conformance": {
+      "enabled": true
+    },
+    "brokenLinks": {
+      "enabled": true
+    },
+    "orphans": {
+      "enabled": true
+    },
+    "missingLinks": {
+      "enabled": true,
+      "minStrength": 0.55
+    },
+    "probes": {
+      "enabled": true
+    },
+    "review": {
+      "enabled": true,
+      "page": "meta/review"
+    },
+    "paths": {
+      "enabled": true
+    }
   },
-
   "probes": [
     {
       "name": "proxmox",
@@ -49,7 +65,12 @@
       "name": "http-reachable",
       "kind": "http",
       "$comment": "Any page with an `address` and a `port` gets a liveness probe.",
-      "appliesTo": { "hasFields": ["address", "port"] },
+      "appliesTo": {
+        "hasFields": [
+          "address",
+          "port"
+        ]
+      },
       "timeoutMs": 4000
     }
   ]

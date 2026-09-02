@@ -344,7 +344,51 @@ async function run() {
     }
   }
 
-  // 6. live probes
+  // 6. machine-specific paths with no machine named
+  //
+  // Agents write paths from whatever machine they happen to be on. A Windows or
+  // home-directory path is meaningless to a reader on a different machine
+  // unless the page says which machine it lives on. This is a real failure mode
+  // here: several pages cite workstation paths that only exist on one box.
+  if (c.paths?.enabled !== false) {
+    // Every machine that actually has a page. "the workstation" is not a
+    // machine name — there could be several, and a reader on a different one
+    // cannot tell whether the path is theirs.
+    const hostNames = pages
+      .filter((x) => x.type === 'host')
+      .map((x) => x.slug.split('/').pop().toLowerCase());
+    // One backslash: \\ in a regex literal is a single literal backslash. The
+    // first version doubled it and so matched nothing at all.
+    const WIN_PATH = /[A-Za-z]:\\[^\s`|)\]]+/g;
+    const NIX_HOME = /(?:^|[\s`(])(?:\/home|\/Users)\/[^\s`|)\]]+/g;
+
+    for (const pg of pages) {
+      const full = await client.page(pg.slug);
+      if (!full?.body) continue;
+      const found = [
+        ...(full.body.match(WIN_PATH) || []),
+        ...(full.body.match(NIX_HOME) || []),
+      ].map((x) => x.trim());
+      if (!found.length) continue;
+
+      // Naming a machine that actually has a page is what qualifies a path.
+      const lower = full.body.toLowerCase();
+      if (/\[\[hosts\//.test(full.body) || hostNames.some((h) => lower.includes(h))) continue;
+
+      const sample = [...new Set(found)].slice(0, 3);
+      finding(
+        pg.slug,
+        'suggestion',
+        'paths:unqualified',
+        'This page gives machine-specific path(s) without saying which machine they are on:\n\n' +
+          sample.map((x) => '- `' + x + '`').join('\n') +
+          '\n\nAn agent reading this from a different machine cannot act on it. Name the machine, ' +
+          'or link the host page the path belongs to.'
+      );
+    }
+  }
+
+  // 7. live probes
   if (c.probes?.enabled) {
     for (const probe of cfg.probes) {
       vlog(`probe ${probe.name} (${probe.kind})`);

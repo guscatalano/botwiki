@@ -8,6 +8,7 @@
 
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createWikiServer } from '../lib/mcp-server.js';
@@ -23,7 +24,11 @@ const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.WIKI_TRUST_PROXY || '');
 
 async function runStdio() {
   // stdio means the caller is on this machine; there is no remote address.
-  const server = createWikiServer({ readOnly, via: 'stdio', clientIp: null });
+  // Over stdio the agent runs on this machine, so the hostname is observed
+  // fact rather than something the client has to be trusted about.
+  const server = createWikiServer({
+    readOnly, via: 'stdio', clientIp: null, serverHost: os.hostname(),
+  });
   await server.connect(new StdioServerTransport());
   // stdout is the protocol channel — every human-facing byte goes to stderr.
   console.error(`botwiki MCP (stdio) ready. pages: ${PAGES_DIR}${readOnly ? ' [read-only]' : ''}`);
