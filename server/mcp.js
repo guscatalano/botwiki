@@ -133,11 +133,18 @@ async function runHttp() {
       // of the conversation — which is the only way tool calls can know which
       // client is calling them, for the page edit record.
       if (isInitialize(body)) {
-        const mcp = createWikiServer({ readOnly, via: 'mcp', clientIp });
+        // The transport does not have an id until initialize completes, so the
+        // server reads it through a closure rather than being handed a value.
+        const holder = {};
+        const mcp = createWikiServer({
+          readOnly, via: 'mcp', clientIp,
+          getConnectionId: () => holder.transport?.sessionId || null,
+        });
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (id) => sessions.set(id, { mcp, transport, lastSeen: Date.now() }),
         });
+        holder.transport = transport;
         transport.onclose = () => {
           if (transport.sessionId) sessions.delete(transport.sessionId);
           mcp.close().catch(() => {});

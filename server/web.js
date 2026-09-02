@@ -15,6 +15,7 @@ import * as talk from '../lib/talk.js';
 import * as types from '../lib/types.js';
 import { find } from '../lib/find.js';
 import * as history from '../lib/history.js';
+import * as revisions from '../lib/revisions.js';
 import { graphPageHtml } from './graph-page.js';
 import { TOKENS } from './theme.js';
 
@@ -198,7 +199,7 @@ function layout(title, bodyHtml, { q = '' } = {}) {
 <body><header class="top"><div class="wrap">
 <a class="brand" href="/">${esc(SITE)}<span>.</span></a>
 <form class="search" action="/search"><input name="q" value="${esc(q)}" placeholder="Search the wiki…" autocomplete="off"></form>
-<nav class="nav"><a href="/">All pages</a><a href="/graph">Graph</a><a href="/review">Review${openTotal ? `<span class="badge">${openTotal}</span>` : ''}</a><a href="/changes">Changes</a>${READONLY ? '' : '<a href="/new">New</a>'}</nav>
+<nav class="nav"><a href="/">All pages</a><a href="/graph">Graph</a><a href="/review">Review${openTotal ? `<span class="badge">${openTotal}</span>` : ''}</a><a href="/changes">Changes</a><a href="/sessions">Sessions</a>${READONLY ? '' : '<a href="/new">New</a>'}</nav>
 </div></header><main><div class="wrap">${bodyHtml}</div></main>
 <footer><div class="wrap">Markdown in <code>${esc(wiki.PAGES_DIR)}</code> · agents query this wiki over MCP${READONLY ? ' · read-only' : ''}</div></footer>
 </body></html>`;
@@ -240,6 +241,8 @@ const provenanceBar = (p) => {
   if (c.model) bits.push(`<span class="model">${esc(c.model)}</span>`);
   const host = o.host || c.host;
   if (host) bits.push(`on <b>${esc(host)}</b>`);
+  const sess = c.session || o.connection;
+  if (sess) bits.push(`<a href="/session/${esc(sess)}" title="everything this run touched">session ${esc(String(sess).slice(0, 8))}</a>`);
   if (o.ip) bits.push(`from <code>${esc(o.ip)}</code>`);
   if (o.via) bits.push(`via ${esc(o.via)}`);
   if (!bits.length) return '';
@@ -471,6 +474,11 @@ async function route(req, res, url) {
       contributors: await history.contributorsOf(slug),
     });
   }
+  if (p.startsWith('/api/session/')) {
+    const id = p.slice('/api/session/'.length);
+    return json(res, { session: id, changes: await revisions.bySession(id) });
+  }
+  if (p === '/api/sessions') return json(res, { sessions: await revisions.sessions({ limit: 30 }) });
   if (p === '/api/changes') {
     return json(res, {
       changes: await history.recentChanges({ limit: Number(url.searchParams.get('limit')) || 40 }),
@@ -556,6 +564,7 @@ async function route(req, res, url) {
             agent: payload.agent || req.headers['user-agent'] || 'http client',
             model: payload.model,
             host: payload.host,
+            session: payload.session,
             context: payload.context,
           },
         })
@@ -679,6 +688,38 @@ ${pr.claimed?.context ? `<div class="why">"${esc(pr.claimed.context)}"</div>` : 
 </div>`;
           }).join('')
         : '<p class="hint">No history — the pages directory is not a git repo.</p>')
+    ));
+  }
+
+  if (p.startsWith('/session/')) {
+    const id = p.slice('/session/'.length);
+    const rows = await revisions.bySession(id);
+    return html(res, layout(`Session ${id.slice(0, 8)}`,
+      `<h1>Session</h1><p class="hint"><code>${esc(id)}</code> — ${rows.length} change(s)</p>` +
+      (rows.length
+        ? `<p class="hint">Everything one run touched. If one of these is wrong, the others are the most likely to be wrong the same way.</p>` +
+          rows.map((r) => `<div class="rev">
+<div class="when">${when(r.at)} · ${esc(String(r.at).slice(0, 16).replace('T', ' '))}</div>
+<div class="who">${esc(r.op)} <a href="/w/${esc(r.page)}">${esc(r.page)}</a></div>
+${r.provenance?.claimed?.context ? `<div class="why">"${esc(r.provenance.claimed.context)}"</div>` : ''}
+</div>`).join('')
+        : '<p class="hint">Nothing recorded under that session.</p>')
+    ));
+  }
+
+  if (p === '/sessions') {
+    const list = await revisions.sessions({ limit: 30 });
+    return html(res, layout('Sessions',
+      `<h1>Sessions</h1><p class="hint">Each run that has written to this wiki, newest first.</p>` +
+      (list.length
+        ? list.map((s2) => `<div class="rev">
+<div class="when">${when(s2.last)} · ${s2.edits} edit(s), ${s2.pages.length} page(s)</div>
+<div class="who"><a href="/session/${esc(s2.session)}"><b>${esc(s2.agent || 'unknown')}</b></a>${
+          s2.model ? ` <span class="mdl">${esc(s2.model)}</span>` : ''
+        }${s2.host ? ` on ${esc(s2.host)}` : ''}</div>
+<div class="meta2">${esc(String(s2.session).slice(0, 20))} · ${s2.pages.slice(0, 6).map((x) => esc(x)).join(', ')}${s2.pages.length > 6 ? ' …' : ''}</div>
+</div>`).join('')
+        : '<p class="hint">No sessions recorded yet.</p>')
     ));
   }
 

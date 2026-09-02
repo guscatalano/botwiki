@@ -361,6 +361,39 @@ check('the deleted content is retained', afterDelete[0]?.raw?.includes('Race'));
 // Later sections rely on this fixture's body; the race tests above rewrote it.
 await wiki.writePage('hosts/pve-01', '# pve-01\n\nUpdated body.');
 
+// --- sessions: grouping a run's edits ---
+// Timestamps almost do this and stop working the moment two agents write in the
+// same minute, which is the case this exists for.
+const SESS = 'sess-alpha';
+for (const p of ['scratch/s1', 'scratch/s2', 'scratch/s3']) {
+  await wiki.writePage(p, `# ${p}\n\nwritten in one run`, {
+    provenance: { via: 'mcp', agent: 'agent-a', model: 'model-a', host: 'boxA', session: SESS, context: 'one run' },
+  });
+}
+await wiki.writePage('scratch/other', '# other\n\ndifferent run', {
+  provenance: { via: 'mcp', agent: 'agent-b', session: 'sess-beta' },
+});
+
+const sessRows = await revisions.bySession(SESS);
+check('a session groups its own edits', sessRows.length === 3, String(sessRows.length));
+check('a session excludes other runs', sessRows.every((r) => r.page !== 'scratch/other'));
+check('session rows are oldest first', sessRows.every((r, i) => i === 0 || sessRows[i - 1].at <= r.at));
+check('an unknown session returns nothing', (await revisions.bySession('nope')).length === 0);
+check('an empty session id returns nothing', (await revisions.bySession('')).length === 0);
+
+const sessList = await revisions.sessions();
+const alpha = sessList.find((s) => s.session === SESS);
+check('sessions are listed', !!alpha, JSON.stringify(sessList.map((s) => s.session)));
+check('a session records who ran it', alpha.agent === 'agent-a' && alpha.model === 'model-a');
+check('a session records the machine', alpha.host === 'boxA');
+check('a session counts its pages', alpha.pages.length === 3, String(alpha.pages.length));
+check('both sessions are distinguished', sessList.length >= 2, String(sessList.length));
+
+const sessProv = (await wiki.readPage('scratch/s1')).provenance;
+check('session is claimed, not observed', sessProv.claimed.session === SESS && sessProv.observed.session === undefined);
+
+for (const p of ['scratch/s1', 'scratch/s2', 'scratch/s3', 'scratch/other']) await wiki.deletePage(p);
+
 check('history never leaks into pages', !(await wiki.listSlugs()).some((s) => s.includes('.history')));
 check('history inherits slug traversal defence', await revisions.listRevisions('../../etc/passwd').then(() => false).catch(() => true));
 
@@ -567,7 +600,7 @@ try {
   );
 
   const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-  check('tools are advertised', tools.join(',') === 'wiki_changes,wiki_comment,wiki_comments,wiki_delete,wiki_find,wiki_graph,wiki_history,wiki_list,wiki_query,wiki_read,wiki_related,wiki_resolve_comment,wiki_review_queue,wiki_search,wiki_stale,wiki_tags,wiki_types,wiki_verify,wiki_write', tools.join(','));
+  check('tools are advertised', tools.join(',') === 'wiki_changes,wiki_comment,wiki_comments,wiki_delete,wiki_find,wiki_graph,wiki_history,wiki_list,wiki_query,wiki_read,wiki_related,wiki_resolve_comment,wiki_review_queue,wiki_search,wiki_session,wiki_stale,wiki_tags,wiki_types,wiki_verify,wiki_write', tools.join(','));
 
   const searchRes = await client.callTool({ name: 'wiki_search', arguments: { query: 'proxmox' } });
   check('wiki_search returns a hit', searchRes.content[0].text.includes('hosts/pve-01'));
