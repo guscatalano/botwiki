@@ -5,6 +5,7 @@
 // Env: WIKI_HOST, WIKI_PORT, WIKI_TOKEN, WIKI_READONLY, WIKI_DIR, WIKI_TITLE
 
 import http from 'node:http';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -625,16 +626,62 @@ ${MASCOT_CSS}
 // a tally that should follow a reader around; a number that only ever climbs
 // teaches people to stop seeing it.
 
+// --- static assets ----------------------------------------------------------
+//
+// The stylesheet and the scripts used to be inlined into every page. Measured on
+// a real page: 54.5KB of HTML, of which 47% was CSS, 24% was JS, and 9% was the
+// page. Agents fetching a page to read it were paying for the chrome every time
+// and several said so.
+//
+// Served as files instead, named by a hash of their contents: the URL changes
+// when the bytes change, so they can be cached permanently and never go stale.
+// One extra request the first time, nothing thereafter, and a document that is
+// mostly document.
+//
+// The boot script stays inline. It has to run before the first paint or the page
+// flashes the wrong skin, and it is a couple of hundred bytes.
+const unwrapScript = (s) => String(s).replace(/^<script>/, '').replace(/<\/script>$/, '');
+const assetHash = (s) => createHash('sha256').update(s).digest('hex').slice(0, 12);
+
+const MENU_JS = `(function(){
+  // The one thing <details> will not do on its own: close when you look away.
+  // Without this the menu stays open behind you for the rest of the page.
+  var m=document.querySelector('nav .menu');
+  if(!m)return;
+  document.addEventListener('click',function(e){ if(!m.contains(e.target)) m.open=false; });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') m.open=false; });
+})();`;
+
+const ASSET_JS_BODY = `${unwrapScript(SKIN_RUNTIME)}\n${MENU_JS}`;
+const ASSET_MERMAID_BODY = unwrapScript(MERMAID_JS);
+
+const ASSETS = new Map();
+function asset(name, type, body) {
+  const url = `/assets/${name}-${assetHash(body)}.${type === 'text/css' ? 'css' : 'js'}`;
+  ASSETS.set(url, { type: `${type}; charset=utf-8`, body });
+  return url;
+}
+const ASSET_CSS_URL = asset('app', 'text/css', CSS);
+const ASSET_JS_URL = asset('app', 'text/javascript', ASSET_JS_BODY);
+const ASSET_MERMAID_URL = asset('diagrams', 'text/javascript', ASSET_MERMAID_BODY);
+
+// `defer` rather than `async`: these read the DOM they are attached to, and the
+// skin runtime marks the picker, which has to exist by then.
+const ASSET_JS_TAG = `<script src="${ASSET_JS_URL}" defer></script>`;
+const ASSET_MERMAID_TAG = `<script src="${ASSET_MERMAID_URL}" defer></script>`;
+
 // The diagram script is emitted only for pages that actually have a diagram.
 // It used to ship on every page and guard itself at runtime, which was fine
 // while it was a few lines and is not now that it carries a pan-and-zoom
 // viewport. Most pages here have no diagram, and this wiki charges its readers
 // by the byte.
-function layout(title, bodyHtml, { q = '' } = {}) {
+function layout(title, bodyHtml, { q = '', rawSlug = '' } = {}) {
   return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title && title !== SITE ? `${esc(title)} · ` : ''}${esc(SITE)}</title>
-<link rel="icon" href="/favicon.svg" type="image/svg+xml"><style>${CSS}</style>${SKIN_BOOT}</head>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="${ASSET_CSS_URL}">
+${rawSlug ? `<link rel="alternate" type="text/markdown" href="/raw/${esc(rawSlug)}">` : ''}${SKIN_BOOT}</head>
 <body><header class="top"><div class="wrap">
 <a class="brand" href="/">${MARKS}<span class="bn">${esc(SITE)}</span></a>
 <form class="search" action="/search"><input name="q" value="${esc(q)}" placeholder="Search the wiki…" autocomplete="off"></form>
@@ -654,16 +701,8 @@ ${
 <nav class="foot-links"><span>Connect</span><a href="/w/meta/mcp">MCP</a><a href="/llms.txt">llms.txt</a></nav>`
 }
 </div></footer>
-${SKIN_RUNTIME}
-${bodyHtml.includes('<pre class="mermaid">') ? MERMAID_JS : ''}
-<script>(function(){
-  // The one thing <details> will not do on its own: close when you look away.
-  // Without this the menu stays open behind you for the rest of the page.
-  var m=document.querySelector('nav .menu');
-  if(!m)return;
-  document.addEventListener('click',function(e){ if(!m.contains(e.target)) m.open=false; });
-  document.addEventListener('keydown',function(e){ if(e.key==='Escape') m.open=false; });
-})();</script>
+${ASSET_JS_TAG}
+${bodyHtml.includes('<pre class="mermaid">') ? ASSET_MERMAID_TAG : ''}
 </body></html>`;
 }
 
@@ -1529,6 +1568,20 @@ function checkAuth(req, res, url) {
 async function route(req, res, url) {
   const p = decodeURIComponent(url.pathname);
   const method = req.method || 'GET';
+
+  // The stylesheet and scripts, named by a hash of their contents. Because the
+  // URL changes whenever the bytes do, these can be cached forever without any
+  // risk of serving a stale one after a deploy.
+  if (p.startsWith('/assets/')) {
+    const a = ASSETS.get(p);
+    if (!a) return send(res, 404, 'text/plain', 'no such asset\n');
+    res.writeHead(200, {
+      'content-type': a.type,
+      'cache-control': 'public, max-age=31536000, immutable',
+      'content-length': Buffer.byteLength(a.body),
+    });
+    return res.end(a.body);
+  }
   if (!p.startsWith('/api/') && !p.startsWith('/vendor/')) {
   }
 
@@ -3216,7 +3269,9 @@ ${voteBar(doc.slug, await votes.scoreOf(doc.slug, { voter: voterIdOf(req, url) }
 ${pageSize(doc)}
 ${provenanceBar(doc.provenance)}
 ${relatedList(rel, doc.slug)}
-<div id="discussion"></div>${talkThread(doc.slug, await talk.listComments(doc.slug))}`
+<div id="discussion"></div>${talkThread(doc.slug, await talk.listComments(doc.slug))}`,
+        // So the head can point at this page's own markdown.
+        { rawSlug: doc.slug }
       )
     );
   }

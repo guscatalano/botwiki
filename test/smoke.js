@@ -1528,7 +1528,12 @@ try {
 
   // Mobile. The header is the piece that breaks first — a nowrap row of brand,
   // search, eight nav links and the skin picker is about twice a phone wide.
-  const shellCss = await (await fetch(`${base}/`, { headers: auth })).text();
+  // The stylesheet is a file now, not something inlined into every page, so
+  // these follow the link instead of grepping the document.
+  const shellForCss = await (await fetch(`${base}/`, { headers: auth })).text();
+  const cssHref = (shellForCss.match(/<link rel="stylesheet" href="([^"]+)"/) || [])[1];
+  check('the page links a stylesheet rather than inlining one', !!cssHref && !/<style>/.test(shellForCss), cssHref);
+  const shellCss = await (await fetch(`${base}${cssHref}`, { headers: auth })).text();
   check('the page ships a narrow-screen stylesheet', /@media \(max-width:720px\)/.test(shellCss));
   check('the header stops being one nowrap row', /header\.top \.wrap\{height:auto;flex-wrap:wrap/.test(shellCss));
   check('the nav is allowed to wrap', /\.nav\{order:4;flex:0 0 100%;flex-wrap:wrap/.test(shellCss));
@@ -1536,7 +1541,7 @@ try {
   // scrolled sideways on a page that was fine a moment earlier.
   check('form fields are 16px on phones', /input,textarea,select\{font-size:16px\}/.test(shellCss));
   check('the floated mascot stops floating', /\.pagemascot\{float:none/.test(shellCss));
-  check('a viewport meta is set', /name="viewport" content="width=device-width/.test(shellCss));
+  check('a viewport meta is set', /name="viewport" content="width=device-width/.test(shellForCss));
   check('wide content still scrolls in its own box', /\.prose table\{[^}]*overflow-x:auto/.test(shellCss));
   check('no fixed width forces a phone to scroll sideways',
     ![...shellCss.matchAll(/[^-]width\s*:\s*(\d+)px/g)].some((m) => Number(m[1]) > 320));
@@ -1558,9 +1563,9 @@ try {
   check('no light skin is offered here', !/data-skin="lab"/.test(skinBtns));
   // Whichever skin is the default has to live on bare :root, because that is
   // what paints before any script runs.
-  check('bare :root carries the default palette', /:root,\s*:root\[data-skin="mesh"\]/.test(shell));
-  check('the non-default skin is attribute-only', !/:root,\s*:root\[data-skin="synth"\]/.test(shell));
-  check('no light-mode media query survives', !/prefers-color-scheme/.test(shell));
+  check('bare :root carries the default palette', /:root,\s*:root\[data-skin="mesh"\]/.test(shellCss));
+  check('the non-default skin is attribute-only', !/:root,\s*:root\[data-skin="synth"\]/.test(shellCss));
+  check('no light-mode media query survives', !/prefers-color-scheme/.test(shellCss));
   // Behaviour, not the exact source text — these pinned the old boot script
   // character for character and broke on a refactor that changed nothing a
   // reader would notice.
@@ -1881,9 +1886,14 @@ try {
   const diagHtml = await (await fetch(`${pubBase}/w/scratch/diagram`)).text();
   check('a mermaid fence becomes a renderable block', diagHtml.includes('<pre class="mermaid">'));
   check('the diagram source survives into the page', diagHtml.includes('caddy --&gt; web'));
-  check('the renderer is loaded lazily, not inlined', diagHtml.includes("'/vendor/mermaid.min.js'"));
+  // The diagram code is a file now, so these follow the script tag rather than
+  // grepping the document for source that is no longer in it.
+  const diagSrc = (diagHtml.match(/<script src="(\/assets\/diagrams-[^"]+)"/) || [])[1];
+  check('a diagram page links the diagram script', !!diagSrc, diagHtml.match(/<script[^>]*>/g)?.join(' '));
+  const diagJs = await (await fetch(`${pubBase}${diagSrc}`)).text();
+  check('the renderer is loaded lazily, not inlined', diagJs.includes("'/vendor/mermaid.min.js'"));
   check('mermaid is served from the vendor allowlist', (await fetch(`${pubBase}/vendor/mermaid.min.js`)).status === 200);
-  check('it renders under strict security', diagHtml.includes("securityLevel:'strict'"));
+  check('it renders under strict security', diagJs.includes("securityLevel:'strict'"));
 
   // An ordinary fence must not be turned into a diagram.
   await wiki.writePage('scratch/codeblock', '# Code\n\n```js\nconst x = 1;\n```\n', { title: 'Code' });
@@ -2311,6 +2321,45 @@ try {
     for (const s of ['scratch/enc', 'scratch/about-enc', 'scratch/enc-json']) await wiki.deletePage(s).catch(() => {});
   }
 
+  // An agent fetching a page should get the page. Measured before this: 54.5KB
+  // of HTML on a real page, 47% stylesheet, 24% script, 9% the actual content —
+  // and several agents said so.
+  {
+    const pg = await (await fetch(`${pubBase}/w/hosts/pve-01`)).text();
+    check('no stylesheet is inlined into the page', !/<style[\s>]/.test(pg));
+    const inlineJs = [...pg.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)]
+      .map((m) => m[1])
+      .join('');
+    // The boot script is the one exception and has to stay: it runs before the
+    // first paint or the page flashes the wrong skin.
+    check('the only inline script is the pre-paint boot', inlineJs.includes('botwiki-skin'), inlineJs.slice(0, 80));
+    check('and it is small', inlineJs.length < 600, `${inlineJs.length} bytes inline`);
+
+    // Measured against a page with real content in it. pve-01 is nearly empty,
+    // so its ratio would be a statement about the chrome and nothing else.
+    const body = ('A paragraph of ordinary prose about the plant. '.repeat(90) + '\n');
+    await wiki.writePage('scratch/weighty', `# Weighty\n\n${body}`, { title: 'Weighty' });
+    const big = await (await fetch(`${pubBase}/w/scratch/weighty`)).text();
+    const chrome = big.length - body.length;
+    check('the chrome around a page is small', chrome < 14000, `${(chrome / 1024).toFixed(1)}K of chrome`);
+    check('a page with content is mostly content', body.length / big.length > 0.25,
+      `content is ${Math.round((100 * body.length) / big.length)}% of ${(big.length / 1024).toFixed(1)}K`);
+    await wiki.deletePage('scratch/weighty');
+
+    // Content-addressed, so it can be cached forever and still never go stale.
+    const href = (pg.match(/<link rel="stylesheet" href="([^"]+)"/) || [])[1];
+    check('the stylesheet is content-addressed', /^\/assets\/app-[0-9a-f]{12}\.css$/.test(href), href);
+    const res = await fetch(`${pubBase}${href}`);
+    check('it is served as css', (res.headers.get('content-type') || '').startsWith('text/css'));
+    check('and cached immutably', (res.headers.get('cache-control') || '').includes('immutable'));
+    check('a wrong asset hash 404s rather than serving something else',
+      (await fetch(`${pubBase}/assets/app-000000000000.css`)).status === 404);
+
+    // An agent that would rather not read HTML at all is told where to go.
+    check('the page points at its own markdown',
+      pg.includes('<link rel="alternate" type="text/markdown" href="/raw/hosts/pve-01">'));
+  }
+
   // The change log links to the page, not only to its history. Someone reading
   // what changed mostly wants to go and look at it.
   {
@@ -2460,16 +2509,22 @@ try {
   const dgm = await (await fetch(`${pubBase}/w/scratch/panzoom`)).text();
   check('a mermaid fence still renders as a diagram block', dgm.includes('<pre class="mermaid">'));
   check('the source survives as readable text', dgm.includes('graph TD'), 'diagram source not in the page');
-  check('the page ships the pan and zoom styles', dgm.includes('.dgm-view') && dgm.includes('.dgm-pan'));
+  // The styles and the script are files now; follow the links rather than
+  // grepping a document that no longer contains either.
+  const dgmCssHref = (dgm.match(/<link rel="stylesheet" href="([^"]+)"/) || [])[1];
+  const dgmCss = await (await fetch(`${pubBase}${dgmCssHref}`)).text();
+  check('the stylesheet carries the pan and zoom styles', dgmCss.includes('.dgm-view') && dgmCss.includes('.dgm-pan'));
+  const dgmJsHref = (dgm.match(/<script src="(\/assets\/diagrams-[^"]+)"/) || [])[1];
+  const dgmJs = await (await fetch(`${pubBase}${dgmJsHref}`)).text();
   for (const fn of ['zoomAt', 'fitScale', 'enhanceAll', 'pointerdown', 'requestFullscreen']) {
-    check(`the diagram script carries ${fn}`, dgm.includes(fn));
+    check(`the diagram script carries ${fn}`, dgmJs.includes(fn));
   }
   // Wheel zoom must stay behind a modifier: a diagram that eats the wheel traps
   // the reader on the page.
-  check('wheel zoom requires ctrl or cmd', /ctrlKey\|\|e\.metaKey/.test(dgm.replace(/\s/g, '')));
-  // A page with no diagram must not pay for any of it.
+  check('wheel zoom requires ctrl or cmd', /ctrlKey\|\|e\.metaKey/.test(dgmJs.replace(/\s/g, '')));
+  // A page with no diagram must not link the diagram script at all.
   const noDgm = await (await fetch(`${pubBase}/w/hosts/pve-01`)).text();
-  check('a page with no diagram loads no diagram code', !noDgm.includes('zoomAt'));
+  check('a page with no diagram loads no diagram code', !noDgm.includes('/assets/diagrams-'));
   await wiki.deletePage('scratch/panzoom');
 
   // Landing on /search with no query is the normal way to arrive — every link to
