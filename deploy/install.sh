@@ -60,6 +60,15 @@ if [ -z "$(ls -A "$PAGES_DIR" 2>/dev/null)" ] && [ -d "$APP_DIR/pages" ]; then
   log "Seeded starter pages"
 fi
 
+# The snapshot job runs `git add -A` here. `.index/` is a derived SQLite database
+# rebuilt from the markdown on demand, and it changes on every write — committing
+# it would bloat the history with binary churn for data that is not the truth.
+# `.locks/` is transient by definition.
+if [ ! -f "$PAGES_DIR/.gitignore" ]; then
+  printf '.index/\n.locks/\n' > "$PAGES_DIR/.gitignore"
+  log "Wrote $PAGES_DIR/.gitignore"
+fi
+
 if [ ! -d "$PAGES_DIR/.git" ]; then
   log "Initialising git history for the pages"
   git init -q -b main "$PAGES_DIR"

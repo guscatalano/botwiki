@@ -12,3 +12,6 @@ token.tmp.txt
 # server and is never committed here.
 /content/
 /data/
+
+# The derived page index. Rebuilt from the markdown on demand; never content.
+pages/.index/
