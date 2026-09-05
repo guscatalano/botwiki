@@ -419,21 +419,38 @@ function makeView2D() {
   svg.on('click', () => api.select(null));
 
   const { w, h } = size();
-  const R = Math.min(w, h) * 0.29 + raw.groups.length * 12;
+  // The ring the folder anchors sit on. It has to widen with the corpus too, or
+  // twenty arms' worth of pages are asked to fit in a circle sized for a few
+  // hundred. The zoom starts out at whatever fits, so a wider ring costs nothing
+  // but a step back.
+  const R =
+    (Math.min(w, h) * 0.29 + raw.groups.length * 12) *
+    Math.max(1, Math.sqrt(nodes.length / 320));
   const anchors = new Map(raw.groups.map((g, i) => {
     const a = (i / raw.groups.length) * Math.PI * 2 - Math.PI / 2;
     return [g, { x: Math.cos(a) * R, y: Math.sin(a) * R }];
   }));
 
+  // Same scaling as the 3D view, and for the same reason: these constants were
+  // chosen when the wiki was a few hundred pages, and a fixed charge against a
+  // growing number of links means a large graph collapses inward until it is a
+  // ball. Square root of the node count, clamped so a small wiki is untouched.
+  const spread2d = Math.max(1, Math.sqrt(nodes.length / 320));
+
   sim = d3.forceSimulation(nodes)
     .force('link', d3.forceLink(links).id(d => d.id)
       // Strong ties pull hard and sit close; weak ones barely tug at all.
-      .distance(l => 150 - 95 * (l.strength ?? 0.3))
+      .distance(l => (150 - 95 * (l.strength ?? 0.3)) * spread2d)
       .strength(l => 0.06 + 0.5 * (l.strength ?? 0.3)))
-    .force('charge', d3.forceManyBody().strength(-560).distanceMax(720))
+    .force('charge', d3.forceManyBody().strength(-560 * spread2d).distanceMax(720 * spread2d))
     .force('collide', d3.forceCollide(d => radius(d) + 19).iterations(2))
-    .force('gx', d3.forceX(d => (anchors.get(d.group) || { x: 0 }).x).strength(0.11))
-    .force('gy', d3.forceY(d => (anchors.get(d.group) || { y: 0 }).y).strength(0.11))
+    // The pull toward each folder's anchor eases off as the graph grows,
+    // otherwise the arms become hairballs of their own.
+    .force('gx', d3.forceX(d => (anchors.get(d.group) || { x: 0 }).x).strength(0.11 / spread2d))
+    .force('gy', d3.forceY(d => (anchors.get(d.group) || { y: 0 }).y).strength(0.11 / spread2d))
+    // More room to untangle before it cools. At a fixed decay a large graph
+    // freezes wherever it happened to be, which is mid-hairball.
+    .alphaDecay(0.0228 / spread2d)
     .on('tick', ticked);
 
   const linkPath = d => {
@@ -656,6 +673,12 @@ function makeView3D() {
     return force;
   }
 
+  // How much room this many nodes need, relative to the few hundred the forces
+  // below were originally tuned against. Square root, because the area a layout
+  // occupies grows with the node count and the distance between things grows
+  // with its root. Clamped so a small wiki behaves exactly as it always did.
+  const spread = Math.max(1, Math.sqrt(nodes.length / 320));
+
   const g = ForceGraph3D()(el)
     // A galaxy needs a night sky. The 3D view keeps a deep backdrop in both
     // themes so the cluster colours read as luminous rather than muddy.
@@ -716,20 +739,34 @@ function makeView3D() {
     .onNodeHover(n => { hotId = n ? n.id : null; api.paint(); el.style.cursor = n ? 'pointer' : 'grab'; })
     .onNodeClick(n => { expandAndSelect(n.id); api.focus(n.id); })
     .onBackgroundClick(() => select(null))
-    .d3AlphaDecay(0.019)
+    // A bigger graph needs longer to untangle. At a fixed decay the simulation
+    // cools on the same schedule whether it is laying out 300 nodes or 1400, so
+    // the large one freezes wherever it happened to be — which is mid-hairball,
+    // and is why "all" looked like a mess while 1200 looked fine. Nothing was
+    // broken; the constants were tuned when this wiki was a few hundred pages
+    // and never scaled with it.
+    .d3AlphaDecay(0.019 / spread)
     .graphData({ nodes, links });
 
   // Strong general repulsion pushes everything apart; the cluster force pulls
   // each folder back to its own arm. The gap between those two is the void.
-  g.d3Force('charge').strength(-190).distanceMax(900);
+  //
+  // Repulsion has to grow with the crowd. A node is pushed by its neighbours and
+  // pulled by its links, and the number of links grows with the graph while a
+  // fixed charge does not — so at constant strength a large graph collapses
+  // inward until everything overlaps everything. Scaled by the square root of
+  // the node count, which is the usual shape for this: area grows with n, so the
+  // distance between things grows with its root.
+  g.d3Force('charge').strength(-190 * spread).distanceMax(900 * spread);
   // Stronger pull toward the arm centre keeps each cluster tight, which is what
-  // makes the gaps between them read as gaps rather than as thinning.
-  g.d3Force('cluster', clusterForce(0.34));
+  // makes the gaps between them read as gaps rather than as thinning. Eased off
+  // as the graph grows, or the arms themselves become the hairball.
+  g.d3Force('cluster', clusterForce(0.34 / Math.max(1, spread * 0.75)));
   if (g.d3Force('link')) {
     g.d3Force('link').strength((l) => (0.05 + 0.45 * (l.strength ?? 0.3)) * (l.half ? 0.5 : 1));
     g.d3Force('link').distance((l) => {
       const a = byId.get(l.source.id ?? l.source), b = byId.get(l.target.id ?? l.target);
-      const base = 100 - 62 * (l.strength ?? 0.3);
+      const base = (100 - 62 * (l.strength ?? 0.3)) * spread;
       // A link that crosses folders should stretch, not drag the arms together.
       return a && b && a.group !== b.group ? base * 5 : base;
     });
