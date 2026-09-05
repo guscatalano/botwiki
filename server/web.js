@@ -408,6 +408,12 @@ ul.pages .k{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--
 .chips-rest{margin:8px 0 0}
 .chips .tag.on{border-color:var(--accent);color:var(--accent)}
 .chips .tag.clear{border-style:dashed;color:var(--muted)}
+table.timing{width:100%;border-collapse:collapse;margin:14px 0 26px;font-size:13px}
+table.timing th{text-align:left;font-weight:600;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;padding:0 10px 7px 0;border-bottom:1px solid var(--line)}
+table.timing td{padding:7px 10px 7px 0;border-bottom:1px solid var(--line)}
+table.timing td.n,table.timing th:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}
+table.timing tr.slow td{color:var(--warn)}
+table.timing tr.slow code{color:var(--warn)}
 .btn{display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;font-size:14px;cursor:pointer}
 .btn:hover{text-decoration:none;border-color:var(--accent)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -1025,7 +1031,7 @@ const statRow = (rows, kind) =>
         .join('')}</ol>`
     : '<p class="hint">Nothing yet.</p>';
 
-const statsHtml = ({ snap, span, top, reads, cold, tally, fresh, total, days, uniq, clients, sizes, writers }) => {
+const statsHtml = ({ snap, span, top, reads, cold, tally, fresh, total, days, uniq, clients, sizes, writers, latency }) => {
   const t = snap.totals || {};
   const n = (k) => (t[k] || 0).toLocaleString('en');
   const pct = (v) => (total ? Math.round((v / total) * 100) : 0);
@@ -1080,6 +1086,31 @@ would overstate every page here. Estimated at one character in four; every model
 tokenises differently, so a precise number would be precisely wrong. That is
 about <strong>${Math.round(sizes.tokens / 1000).toLocaleString('en')}k tokens</strong>
 across the whole wiki, or ${(sizes.bytes / 1024 / 1024).toFixed(1)} MB on disk.</p>`
+    : ''
+}
+
+${
+  latency?.routes?.length
+    ? `<h2>Response times <span class="hint" style="font-weight:400">· today</span></h2>
+<p class="hint">Per route, not per page — the useful question is whether reading
+<em>a</em> page is slow, not which one. Today only: a lifetime histogram cannot
+tell a route that <em>was</em> slow from one that <em>is</em>, which after any
+fix is the same shape as never having fixed it. Percentiles are bucket ceilings,
+so p95 of <code>500ms</code> means <em>at or under</em> 500ms; the histogram
+cannot say 487ms and does not pretend to. Sorted by p95, because a route that is
+usually fast and occasionally terrible is what a mean hides.</p>
+<table class="timing"><thead><tr><th>route</th><th>reqs</th><th>p50</th><th>p95</th><th>p99</th><th>over 1s</th></tr></thead><tbody>
+${latency.routes
+        .map((r) => {
+          const ms = (v) => (v === null ? '&gt;5s' : v >= 1000 ? `${v / 1000}s` : `${v}ms`);
+          const bad = r.p95 === null || r.p95 >= 1000;
+          return `<tr${bad ? ' class="slow"' : ''}><td><code>${esc(r.route)}</code></td>
+<td class="n">${r.requests.toLocaleString('en')}</td><td class="n">${ms(r.p50)}</td>
+<td class="n">${ms(r.p95)}</td><td class="n">${ms(r.p99)}</td>
+<td class="n">${r.slow ? r.slow.toLocaleString('en') : '·'}</td></tr>`;
+        })
+        .join('')}
+</tbody></table>`
     : ''
 }
 
@@ -1808,7 +1839,7 @@ later writes so your edits are attributed to you rather than to your address.</p
   if (p === '/stats' || p === '/api/stats') {
     const snap = await stats.snapshot();
     const days = Math.min(120, Math.max(7, Number(url.searchParams.get('days')) || 30));
-    const [span, top, reads, cold, tally, reg, uniq, clients, sizes, issuedTokens] = await Promise.all([
+    const [span, top, reads, cold, tally, reg, uniq, clients, sizes, issuedTokens, latency] = await Promise.all([
       stats.series({ days }),
       stats.busiest({ by: 'view', limit: 15 }),
       stats.busiest({ by: 'read', limit: 15 }),
@@ -1826,6 +1857,7 @@ later writes so your edits are attributed to you rather than to your address.</p
       // the tile read 0 against 152 live credentials. The register cannot drift
       // from itself.
       tokens.list(),
+      stats.timings({ limit: 14 }),
     ]);
     const total = await wiki.countPages();
     const now = Date.now();
@@ -1863,6 +1895,8 @@ later writes so your edits are attributed to you rather than to your address.</p
           : null,
         uniqueVisitors: uniq,
         writers,
+        // Percentiles are bucket ceilings, not measurements — see stats.timings.
+        responseTimes: latency,
         clients,
         freshness: fresh,
         busiest: top,
@@ -1873,7 +1907,7 @@ later writes so your edits are attributed to you rather than to your address.</p
     }
     return html(
       res,
-      layout('Statistics', statsHtml({ snap, span, top, reads, cold, tally, fresh, total, days, uniq, clients, sizes, writers }))
+      layout('Statistics', statsHtml({ snap, span, top, reads, cold, tally, fresh, total, days, uniq, clients, sizes, writers, latency }))
     );
   }
 
@@ -3238,6 +3272,21 @@ ${existing ? `<form method="post" action="/delete" onsubmit="return confirm('Del
 <input type="hidden" name="slug" value="${esc(slug)}"><button class="btn danger" type="submit">Delete page</button></form>` : ''}`;
 }
 
+// A path collapsed to the handler that served it. Timing `/w/lore/index` apart
+// from `/w/soul/kern` would give one sample per page and answer nothing; the
+// useful statement is "reading a page is slow", which is about the handler.
+// Also keeps slugs out of the timing table, so it stays counts about routes
+// rather than a record of what anybody read.
+function routeClass(pathname, method) {
+  const p = String(pathname || '/');
+  const m = method && method !== 'GET' ? `${method} ` : '';
+  for (const prefix of ['/w/', '/raw/', '/api/page/', '/api/related/', '/api/history/', '/api/talk/', '/history/', '/talk/']) {
+    if (p.startsWith(prefix)) return `${m}${prefix}*`;
+  }
+  if (p.startsWith('/api/')) return `${m}${p.split('?')[0]}`;
+  return `${m}${p === '/' ? '/' : p.replace(/\/+$/, '')}`;
+}
+
 const server = http.createServer(async (req, res) => {
   // The scheme has to come from the proxy, not from the socket: this process
   // only ever speaks plain HTTP to Caddy, so building absolute URLs from the
@@ -3247,6 +3296,13 @@ const server = http.createServer(async (req, res) => {
   const proto =
     (TRUST_PROXY && String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim()) || 'http';
   const url = new URL(req.url, `${proto}://${req.headers.host || 'localhost'}`);
+  // Timed here, at the one point every request already passes through. Timers
+  // added per handler are timers missing from every handler added afterwards,
+  // which is the mistake this file has now made three times with counters.
+  const began = process.hrtime.bigint();
+  res.once('finish', () => {
+    stats.timed(routeClass(url.pathname, req.method), Number(process.hrtime.bigint() - began) / 1e6);
+  });
   try {
     await route(req, res, url);
   } catch (err) {

@@ -354,6 +354,77 @@ for (const s of ['scratch/prov', 'scratch/prov2', 'scratch/prov3']) await wiki.d
   await wiki.deletePage('scratch/counted-1');
 }
 
+// --- the graph is built once per corpus, not once per page view --------------
+// relatedTo() calls buildGraph(), and the page view calls relatedTo(), so every
+// page read was opening every file and computing all-pairs similarity to answer
+// a question about one node. A cache's only contract is that it does not change
+// answers, so that is what gets asserted.
+{
+  const graph = await import('../lib/graph.js');
+  graph.clearGraphMemo();
+
+  const first = await graph.buildGraph();
+  const second = await graph.buildGraph();
+  check('the graph is memoised', first === second, 'rebuilt when nothing changed');
+
+  // Same question, cold and warm, must give the same answer.
+  const warm = await graph.relatedTo('hosts/pve-01', { limit: 5 });
+  graph.clearGraphMemo();
+  const cold = await graph.relatedTo('hosts/pve-01', { limit: 5 });
+  check('cached and uncached agree', JSON.stringify(warm) === JSON.stringify(cold));
+
+  // A write must invalidate it. The stamp comes from stored page metadata
+  // rather than a local counter, because the web and MCP servers are separate
+  // processes over one directory and a counter in one is invisible to the other.
+  const before = await graph.buildGraph();
+  await wiki.writePage('scratch/graph-bust', '# Bust\n\nlinks [[hosts/pve-01]]', { title: 'Bust' });
+  const after = await graph.buildGraph();
+  check('a write invalidates the graph', before !== after, 'stale graph served after a write');
+  check('and the new page is in it', after.nodes.some((n) => n.id === 'scratch/graph-bust'));
+
+  await wiki.deletePage('scratch/graph-bust');
+  const afterDelete = await graph.buildGraph();
+  check('a delete invalidates it too', !afterDelete.nodes.some((n) => n.id === 'scratch/graph-bust'));
+}
+
+// --- backlinks come from the index, and agree with the scan ------------------
+// The cache's only contract is that it does not change answers, so assert that
+// directly: same question, both paths, same result. backlinks() was O(n) reads
+// per page view and had quietly become the slowest thing in the wiki.
+{
+  const indexdb = await import('../lib/index-db.js');
+  await wiki.writePage('scratch/bl-target', '# Target\n\nnothing', { title: 'Target' });
+  await wiki.writePage('scratch/bl-a', '# A\n\nsee [[scratch/bl-target]]', { title: 'A' });
+  await wiki.writePage('scratch/bl-b', '# B\n\nand [[scratch/bl-target|the target]]', { title: 'B' });
+  await wiki.writePage('scratch/bl-c', '# C\n\nlinks nowhere near it', { title: 'C' });
+
+  const got = (await wiki.backlinks('scratch/bl-target')).map((r) => r.slug).sort();
+  check('backlinks finds both linkers', got.join(',') === 'scratch/bl-a,scratch/bl-b', got.join(','));
+  check('and not the page that does not link', !got.includes('scratch/bl-c'));
+  // A labelled link points at the same page as a bare one.
+  check('a piped wikilink still counts as a link', got.includes('scratch/bl-b'));
+
+  // Editing a page must retract the link it no longer contains, or the index
+  // accumulates edges the files do not have.
+  await wiki.writePage('scratch/bl-a', '# A\n\nno link any more', { title: 'A' });
+  const after = (await wiki.backlinks('scratch/bl-target')).map((r) => r.slug);
+  check('a removed link disappears from backlinks', !after.includes('scratch/bl-a'), after.join(','));
+
+  // A deleted page cannot go on linking to things.
+  await wiki.deletePage('scratch/bl-b');
+  check('a deleted page stops linking', !(await wiki.backlinks('scratch/bl-target')).some((r) => r.slug === 'scratch/bl-b'));
+
+  await wiki.writePage('scratch/bl-b', '# B\n\nand [[scratch/bl-target]]', { title: 'B' });
+  const viaIndex = (await wiki.backlinks('scratch/bl-target')).map((r) => r.slug).sort().join(',');
+  const raw = await indexdb.backlinksTo('scratch/bl-target');
+  check('the index is actually answering', Array.isArray(raw), 'index unavailable — fallback under test, not the fast path');
+  check('index and scan agree', viaIndex === 'scratch/bl-b', viaIndex);
+
+  for (const s of ['scratch/bl-target', 'scratch/bl-a', 'scratch/bl-b', 'scratch/bl-c']) {
+    await wiki.deletePage(s).catch(() => {});
+  }
+}
+
 // --- a write that succeeded must not report failure --------------------------
 // Found the hard way: an unwritable history file made a PUT answer 500 on a page
 // that was already durably on disk. The caller retries a write that worked, or
@@ -1994,6 +2065,52 @@ try {
     const v1 = await totals('view');
     check('a redirect to a page counts once, not twice', v1 - v0 <= 1, `view +${v1 - v0}`);
     await wiki.deletePage('scratch/readcount');
+  }
+
+  // Response times, so "the wiki feels slower" is a measurement rather than an
+  // argument. Histogram buckets, not durations: a stored duration per request
+  // is a request log, and this wiki promises it does not keep one.
+  {
+    const st = await import('../lib/stats.js');
+    for (let i = 0; i < 6; i++) await fetch(`${pubBase}/w/hosts/pve-01`);
+    for (let i = 0; i < 6; i++) await fetch(`${pubBase}/api/pages`);
+    const j = await (await fetch(`${pubBase}/api/stats`)).json();
+    const rt = j.responseTimes;
+    check('stats report response times', Array.isArray(rt?.routes) && rt.routes.length > 0);
+    check('and the bucket edges they were measured against', Array.isArray(rt?.edges) && rt.edges.length > 0);
+
+    const byRoute = Object.fromEntries((rt?.routes || []).map((r) => [r.route, r]));
+    // Paths collapse to the handler that served them. Timing each slug apart
+    // would give one sample per page and answer nothing — and would put a
+    // record of what was read into the statistics.
+    check('page reads are grouped by handler, not by slug', '/w/*' in byRoute, Object.keys(byRoute).join(' '));
+    check('no slug appears in the timing table', !JSON.stringify(rt).includes('pve-01'));
+    check('a route records its request count', byRoute['/w/*']?.requests >= 6, String(byRoute['/w/*']?.requests));
+    check('and percentiles land on bucket edges', rt.routes.every((r) => r.p95 === null || rt.edges.includes(r.p95)));
+    check('p50 is never worse than p95', rt.routes.every((r) => r.p95 === null || (r.p50 !== null && r.p50 <= r.p95)));
+
+    // Merging must be elementwise on the buckets. Averaging percentiles across
+    // processes would be meaningless, and this wiki runs two.
+    const before = byRoute['/w/*'].requests;
+    for (let i = 0; i < 3; i++) await fetch(`${pubBase}/w/hosts/pve-01`);
+    const after = ((await (await fetch(`${pubBase}/api/stats`)).json()).responseTimes.routes || [])
+      .find((r) => r.route === '/w/*');
+    check('timing accumulates across flushes', after.requests > before, `${before} -> ${after.requests}`);
+    check('the histogram sums to the request count',
+      after.buckets.reduce((a, b) => a + b, 0) === after.requests,
+      `${after.buckets.reduce((a, b) => a + b, 0)} vs ${after.requests}`);
+    check('timings() is available to other surfaces', typeof st.timed === 'function' && typeof st.timings === 'function');
+
+    // Bucketed by day, so a route that was slow yesterday and is fast now reads
+    // as fast. A lifetime histogram answers "was it ever", which after a fix is
+    // indistinguishable from never having fixed it.
+    check('the window is reported with the numbers', rt.days === 1 && Array.isArray(rt.covering));
+    const wide = await st.timings({ days: 30, minRequests: 1 });
+    const narrow = await st.timings({ days: 1, minRequests: 1 });
+    const reqs = (t, r) => t.routes.find((x) => x.route === r)?.requests || 0;
+    check('a wider window includes at least as much', reqs(wide, '/w/*') >= reqs(narrow, '/w/*'),
+      `30d ${reqs(wide, '/w/*')} vs 1d ${reqs(narrow, '/w/*')}`);
+    check('an older day does not leak into today', wide.covering.length >= narrow.covering.length);
   }
 
   // Parity across the three doors, asserted by capability rather than by
