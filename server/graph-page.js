@@ -1172,6 +1172,29 @@ function buildLegend() {
   await setMode(new URLSearchParams(location.search).get('3d') === '1' ? '3d' : mode);
   if (selectedId) select(selectedId);
 
+  // On a large graph, start with similarity edges hidden.
+  //
+  // They are a third of what gets drawn at full size and they are the third
+  // that says least: a TF-IDF edge means "these read alike", which is a real
+  // finding among a few hundred varied pages and nearly vacuous once a thousand
+  // pages share a subject and a voice. Structure — what somebody linked and
+  // what somebody tagged — is what makes the picture legible.
+  //
+  // Done by switching the control, not by filtering underneath it. The chip
+  // reads "similar" and is visibly off, and one click brings them back; a view
+  // that hid a third of its edges without saying so would be the same mistake as
+  // the node budget not admitting what it dropped.
+  if (raw.nodes.length > 800 && show.similar) {
+    show.similar = false;
+    document.getElementById('e-similar').checked = false;
+    document.getElementById('c-similar').classList.toggle('on', false);
+    document.getElementById('c-similar').title =
+      'Similarity edges are off because this graph is large — they were a third of the picture and the least informative third. Click to bring them back.';
+    recomputeLocal();
+    if (view) view.refresh();
+    buildSidebar();
+  }
+
   // Auto: measure this machine on this graph, then fit the budget to it once.
   // Skipped where raising it is a bad idea regardless of how fast the frames
   // look — a phone that renders 300 nodes smoothly will still cook itself on

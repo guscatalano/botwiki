@@ -2273,6 +2273,30 @@ try {
     await wiki.deletePage('scratch/sess-a');
   }
 
+  // Similarity edges taper as the corpus grows. On a few hundred varied pages a
+  // TF-IDF edge is a real finding; where a thousand pages are the same subject
+  // in the same voice everything reads alike, the edges distinguish nothing, and
+  // they were half of what was drawn. Explicit links and shared tags do not
+  // taper — those are things somebody did, and they stay true at any size.
+  {
+    const gr = await import('../lib/graph.js');
+    gr.clearGraphMemo();
+    const tapered = await gr.buildGraph();
+    // Pinned values must still win, or the graph page and these tests lose control.
+    gr.clearGraphMemo();
+    const pinned = await gr.buildGraph({ minSimilarity: 0.9, maxSimilarPerNode: 1 });
+    const simOf = (g) => g.edges.filter((e) => e.type === 'similar').length;
+    check('an explicit similarity floor is honoured', simOf(pinned) <= simOf(tapered),
+      `${simOf(pinned)} vs ${simOf(tapered)}`);
+    gr.clearGraphMemo();
+    // Structural evidence is untouched by the taper.
+    const relaxed = await gr.buildGraph({ minSimilarity: 0.01, maxSimilarPerNode: 8 });
+    const structural = (g) => g.edges.filter((e) => e.type !== 'similar').length;
+    check('links and tags do not taper with similarity', structural(relaxed) === structural(tapered),
+      `${structural(relaxed)} vs ${structural(tapered)}`);
+    gr.clearGraphMemo();
+  }
+
   // The graph ships a node budget, not the corpus. The server answers fast
   // because the build is memoised; the cost is the browser parsing megabytes
   // and running a force simulation over every node.
