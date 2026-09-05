@@ -5,7 +5,7 @@
 // The sidebar, search, detail panel and selection are shared, so switching
 // renderer never costs you your place. Both libraries are vendored, not CDN.
 
-import { TOKENS, GROUP_VARS } from './theme.js';
+import { TOKENS, GROUP_VARS, SKIN_BOOT, SKIN_PICKER, SKIN_CSS, SKIN_JS, MARKS, MARK_CSS } from './theme.js';
 
 export function graphPageHtml({ site = 'botwiki' } = {}) {
   return `<!doctype html><html lang="en"><head>
@@ -15,7 +15,9 @@ export function graphPageHtml({ site = 'botwiki' } = {}) {
 ${TOKENS}
 *{box-sizing:border-box}
 html,body{height:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden;-webkit-font-smoothing:antialiased}
+body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.6 var(--font-ui);overflow:hidden;-webkit-font-smoothing:antialiased}
+${SKIN_CSS}
+${MARK_CSS}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
 button{font:inherit;cursor:pointer}
@@ -81,6 +83,19 @@ svg.grabbing{cursor:grabbing}
 .gchip{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:99px;font-size:11.5px;background:var(--panel);border:1px solid var(--line);color:var(--muted);user-select:none;cursor:pointer}
 .gchip .d{width:8px;height:8px;border-radius:50%}
 .gchip.off{opacity:.4}
+/* One chip per namespace, and namespaces only ever get added, so this row grew
+   until it covered the corner of the canvas it sits on. Three, then a fold.
+   The panel opens upward because the bar is anchored to the bottom of the
+   stage and downward is off the screen. */
+.legendmore{position:relative}
+.legendmore summary{list-style:none;cursor:pointer}
+.legendmore summary::-webkit-details-marker{display:none}
+.legendmore summary::marker{content:''}
+.legendrest{display:none}
+.legendmore[open] .legendrest{display:flex;flex-wrap:wrap;gap:6px;position:absolute;left:0;bottom:calc(100% + 6px);
+  max-height:46vh;overflow-y:auto;padding:8px;border-radius:10px;background:var(--panel);border:1px solid var(--line);
+  width:max-content;max-width:min(52vw,420px);box-shadow:0 8px 24px rgba(0,0,0,.28)}
+.stage.night .legendmore[open] .legendrest{background:rgba(18,20,30,.9);border-color:rgba(255,255,255,.14)}
 .zoombar{position:absolute;right:14px;bottom:14px;display:flex;flex-direction:column;gap:5px;z-index:3}
 .stats{position:absolute;right:14px;top:14px;font-size:11.5px;color:var(--muted);text-align:right;line-height:1.6;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:7px 11px;z-index:3}
 .stats b{color:var(--ink);font-variant-numeric:tabular-nums}
@@ -134,10 +149,25 @@ kbd{font:inherit;font-size:11px;background:var(--code);border:1px solid var(--li
 .g3d-tip{padding:7px 10px;border-radius:8px;background:#111;color:#fff;font:13px/1.4 ui-sans-serif,system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.35)}
 .g3d-tip small{display:block;opacity:.65;font-family:ui-monospace,Menlo,monospace;font-size:11px;margin-top:2px}
 @media (max-width:900px){.shell,.shell.detail{grid-template-columns:1fr}.side,.detailpane,.help{display:none}}
-</style></head><body>
+/* Phones. The header is a nowrap row of brand, a 220px search field, the view
+   toggles and the skin picker, sitting in a grid row fixed at 56px — so it
+   overflows sideways and clips rather than wrapping. The row becomes auto and
+   the field takes its own line. The graph itself is already touch-workable:
+   d3-zoom and the 3d view both handle pinch and drag. */
+@media (max-width:720px){
+  .app{grid-template-rows:auto 1fr}
+  header{flex-wrap:wrap;padding:8px 12px;gap:8px 10px}
+  .brand{order:1}
+  .skins{order:2;margin-left:auto}
+  #q{order:3;width:100%;font-size:16px}
+  .toggles{order:4}
+  .sep{display:none}
+  .toggles button{padding:8px 12px}
+}
+</style>${SKIN_BOOT}</head><body>
 <div class="app">
 <header>
-  <a class="brand" href="/">${site}<span>.</span></a>
+  <a class="brand" href="/">${MARKS}<span class="bn">${site}</span></a>
   <div class="sep"></div>
   <input id="q" placeholder="Search pages, tags, slugs…" autocomplete="off" spellcheck="false">
   <div class="toggles">
@@ -160,6 +190,7 @@ kbd{font:inherit;font-size:11px;background:var(--code);border:1px solid var(--li
   <button class="ico" id="fit" title="Fit to view (F)">⤢</button>
   <button class="ico" id="relayout" title="Re-run layout">⟳</button>
   <div class="sep"></div>
+  ${SKIN_PICKER}
   <a href="/">← pages</a>
 </header>
 <div class="shell" id="shell">
@@ -964,9 +995,25 @@ addEventListener('keydown', e => {
 
   const counts = {};
   for (const n of raw.nodes) counts[n.group] = (counts[n.group] || 0) + 1;
-  document.getElementById('legend').innerHTML = raw.groups.map(gr =>
-    '<div class="gchip" data-g="' + esc(gr) + '"><span class="d" style="background:' + groupColor(gr) + '"></span>' +
-    esc(gr) + ' ' + (counts[gr] || 0) + '</div>').join('');
+  const LEGEND_SHOWN = 3;
+  const chip = gr =>
+    '<div class="gchip' + (hidden.has(gr) ? ' off' : '') + '" data-g="' + esc(gr) + '">' +
+    '<span class="d" style="background:' + groupColor(gr) + '"></span>' +
+    esc(gr) + ' ' + (counts[gr] || 0) + '</div>';
+  // Biggest first, so the three that stay in the open are the three worth
+  // having. A hidden group is kept out too — a filter you cannot see you
+  // applied is how the graph ends up looking wrong for no visible reason.
+  const ordered = raw.groups.slice().sort((a, b) =>
+    (hidden.has(a) === hidden.has(b) ? 0 : hidden.has(a) ? -1 : 1) ||
+    (counts[b] || 0) - (counts[a] || 0) || String(a).localeCompare(String(b)));
+  const head = ordered.slice(0, LEGEND_SHOWN);
+  const rest = ordered.slice(LEGEND_SHOWN);
+  document.getElementById('legend').innerHTML =
+    head.map(chip).join('') +
+    (rest.length
+      ? '<details class="legendmore"><summary class="gchip">+' + rest.length + ' more</summary>' +
+        '<div class="legendrest">' + rest.map(chip).join('') + '</div></details>'
+      : '');
   document.getElementById('legend').addEventListener('click', e => {
     const chip = e.target.closest('[data-g]'); if (!chip) return;
     hidden.has(chip.dataset.g) ? hidden.delete(chip.dataset.g) : hidden.add(chip.dataset.g);
@@ -994,5 +1041,14 @@ addEventListener('keydown', e => {
   await setMode(new URLSearchParams(location.search).get('3d') === '1' ? '3d' : mode);
   if (selectedId) select(selectedId);
 })();
-</script></body></html>`;
+
+// The renderers read their colours from CSS variables through getComputedStyle
+// at paint time, so a skin change is invisible to them until something redraws.
+// setMode tears the view down and rebuilds it, which is exactly what is wanted.
+window.addEventListener('skinchange', () => {
+  buildSidebar();
+  if (selectedId) syncSidebar();
+  setMode(mode);
+});
+</script>${SKIN_JS}</body></html>`;
 }
