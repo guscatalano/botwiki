@@ -412,6 +412,9 @@ ul.pages .k{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--
 .chips-rest{margin:8px 0 0}
 .chips .tag.on{border-color:var(--accent);color:var(--accent)}
 .chips .tag.clear{border-style:dashed;color:var(--muted)}
+.histlink{margin-left:6px;padding:1px 6px;border:1px solid var(--line);border-radius:6px;font-size:11px;color:var(--muted);text-decoration:none}
+.histlink:hover{border-color:var(--accent);color:var(--accent)}
+.sepdot{margin:0 7px;color:var(--muted);opacity:.6}
 .eyebrow{margin:0 0 2px;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em}
 h1.subject{margin:0 0 6px;line-height:1.15}
 h1.subject a{color:inherit;text-decoration:none}
@@ -2958,16 +2961,20 @@ ${r.provenance?.claimed?.context ? `<div class="why">"${esc(r.provenance.claimed
   if (p === '/sessions') {
     const list = await revisions.sessions({ limit: 30 });
     return html(res, layout('Sessions',
-      `<h1>Sessions</h1><p class="hint">Each run that has written to this wiki, newest first.</p>` +
+      `<h1>Sessions</h1><p class="hint">Each run that has written to this wiki, newest first.
+Rows marked <em>inferred</em> named no session — a write over <code>/api/write</code> carries none —
+so they are grouped by writer, tool and day instead. That is an approximation and is labelled as one.</p>` +
       (list.length
         ? list.map((s2) => `<div class="rev">
-<div class="when">${when(s2.last)} · ${s2.edits} edit(s), ${s2.pages.length} page(s)</div>
-<div class="who"><a href="/session/${esc(s2.session)}"><b>${esc(showAgent(s2.agent) || 'unknown')}</b></a>${
+<div class="when">${when(s2.last)} · ${s2.edits} edit(s), ${s2.pages.length} page(s)${
+          s2.inferred ? ' · <span class="mdl">inferred</span>' : ''
+        }</div>
+<div class="who"><a href="/session/${encodeURIComponent(s2.session)}"><b>${esc(showAgent(s2.agent) || 'unknown')}</b></a>${
           s2.model ? ` <span class="mdl">${esc(s2.model)}</span>` : ''
         }${s2.host ? ` on ${esc(showHost(s2.host))}` : ''}</div>
-<div class="meta2">${esc(String(s2.session).slice(0, 20))} · ${s2.pages.slice(0, 6).map((x) => esc(x)).join(', ')}${s2.pages.length > 6 ? ' …' : ''}</div>
+<div class="meta2">${esc(String(s2.session).slice(0, 28))} · ${s2.pages.slice(0, 6).map((x) => `<a href="/w/${esc(x)}">${esc(x)}</a>`).join(', ')}${s2.pages.length > 6 ? ' …' : ''}</div>
 </div>`).join('')
-        : '<p class="hint">No sessions recorded yet.</p>')
+        : '<p class="hint">Nothing has been written yet.</p>')
     ));
   }
 
@@ -2979,7 +2986,16 @@ ${r.provenance?.claimed?.context ? `<div class="why">"${esc(r.provenance.claimed
         ? changes.map((c) => `<div class="rev">
 <div class="when">${when(c.at)} · ${esc(String(c.at).slice(0, 16).replace('T', ' '))}</div>
 <div class="who">${esc(c.subject)}</div>
-<div class="meta2">${esc(c.short)} · ${c.pages.map((s2) => `<a href="/history/${esc(s2)}">${esc(s2)}</a>`).join(', ')}</div>
+<div class="meta2">${esc(c.short)} · ${c.pages
+          // The slug went to the history and nowhere to the page itself, which
+          // is backwards: someone reading the change log mostly wants to go and
+          // look at what changed. The page is the link; its history is offered
+          // beside it.
+          .map(
+            (s2) =>
+              `<a href="/w/${esc(s2)}">${esc(s2)}</a><a class="histlink" href="/history/${esc(s2)}" title="History of ${esc(s2)}">history</a>`
+          )
+          .join('<span class="sepdot">·</span>')}</div>
 </div>`).join('')
         : '<p class="hint">Nothing recorded yet. History is written when a page is saved through the wiki — a file dropped into the pages directory by hand has none.</p>')
     ));

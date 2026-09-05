@@ -2246,6 +2246,33 @@ try {
     for (const s of ['scratch/enc', 'scratch/about-enc', 'scratch/enc-json']) await wiki.deletePage(s).catch(() => {});
   }
 
+  // The change log links to the page, not only to its history. Someone reading
+  // what changed mostly wants to go and look at it.
+  {
+    const ch = await (await fetch(`${pubBase}/changes`)).text();
+    check('/changes links to the page', /href="\/w\/[^"]+"/.test(ch), 'no page links');
+    check('/changes also offers the history', /class="histlink" href="\/history\//.test(ch), 'no history links');
+  }
+
+  // Sessions went blank once a few thousand writes arrived carrying no session
+  // of their own — every self-identifying run fell out of the scan window.
+  {
+    const revs = await import('../lib/revisions.js');
+    await wiki.writePage('scratch/sess-a', '# A', {
+      title: 'A',
+      provenance: { via: 'api', token: 'tok-xyz', agent: 'curl/8' },
+    });
+    const list = await revs.sessions({ limit: 20 });
+    check('a write with no session still groups', list.length > 0, 'sessions still empty');
+    const inferred = list.find((s) => s.inferred);
+    check('and is marked inferred rather than passed off as a session', !!inferred);
+    check('grouped by writer, tool and day', !inferred || /^~/.test(inferred.session), inferred?.session);
+    const html2 = await (await fetch(`${pubBase}/sessions`)).text();
+    check('the sessions page is not empty', !html2.includes('No sessions recorded yet'));
+    check('and says which rows are approximations', html2.includes('inferred'));
+    await wiki.deletePage('scratch/sess-a');
+  }
+
   // The graph ships a node budget, not the corpus. The server answers fast
   // because the build is memoised; the cost is the browser parsing megabytes
   // and running a force simulation over every node.

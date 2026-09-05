@@ -186,6 +186,7 @@ kbd{font:inherit;font-size:11px;background:var(--code);border:1px solid var(--li
   <label class="budget" title="How many pages to draw. The busiest are kept first — raising this costs load time, not accuracy.">
     <span id="budgetlbl">pages</span>
     <select id="budget">
+      <option value="auto">auto</option>
       <option value="300">300</option>
       <option value="600">600</option>
       <option value="1200">1200</option>
@@ -996,8 +997,57 @@ addEventListener('keydown', e => {
 // second — it is the browser parsing that and running a force simulation over
 // it. The busiest pages are kept first, so the shape survives, and the picker
 // raises the budget for anyone who wants the rest.
+// How many nodes this machine can actually draw, measured rather than guessed.
+//
+// The hardware hints a browser exposes are too weak to size this on.
+// navigator.deviceMemory is Chromium-only, rounded to a privacy-preserving
+// bucket, and caps at 8; hardwareConcurrency counts cores and says nothing about
+// the GPU, which is what the 3D view depends on. Neither knows what else the
+// machine is doing right now.
+//
+// So: draw the safe default, watch how long the frames actually take while the
+// layout is settling, and scale from that. One probe, one adjustment. Force
+// layout is close enough to linear per frame over this range that a ratio is a
+// fair estimate, and being wrong is cheap because the manual picker is right
+// there.
+var AUTO_KEY = 'botwiki-graph-auto';
+var TARGET_MS = 22; // ~45fps while settling. Comfortable, not aspirational.
+
+function probeFrameCost(frames) {
+  return new Promise(resolve => {
+    var want = frames || 45;
+    var seen = [];
+    var last = performance.now();
+    function tick(now) {
+      seen.push(now - last);
+      last = now;
+      if (seen.length >= want) {
+        // Median, not mean: one long frame from a garbage collection or a
+        // background tab should not decide how much of the wiki you get to see.
+        seen.sort(function (a, b) { return a - b; });
+        resolve(seen[Math.floor(seen.length / 2)]);
+      } else requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  });
+}
+
+function autoCeiling(measuredMs, atNodes, totalNodes) {
+  // Anything at or under target already: room to grow, in proportion.
+  var scaled = atNodes * (TARGET_MS / Math.max(1, measuredMs));
+  // Never below the safe default, never above the corpus, and stepped so the
+  // number shown is a round one somebody could have picked themselves.
+  var steps = [300, 600, 1200, 2500, 5000];
+  var cap = Math.min(scaled, totalNodes);
+  var best = 300;
+  for (var i = 0; i < steps.length; i++) if (steps[i] <= cap) best = steps[i];
+  return best >= totalNodes ? 0 : best;
+}
+
 async function load(limit) {
-  const budget = limit === undefined ? Number(document.getElementById('budget').value) : limit;
+  var sel = document.getElementById('budget').value;
+  var chosen = sel === 'auto' ? (Number(localStorage.getItem(AUTO_KEY)) || 300) : Number(sel);
+  const budget = limit === undefined ? chosen : limit;
   stage.classList.add('busy');
   const g = await (await fetch('/api/graph?limit=' + budget)).json();
   stage.classList.remove('busy');
@@ -1084,6 +1134,29 @@ function buildLegend() {
   recomputeLocal();
   await setMode(new URLSearchParams(location.search).get('3d') === '1' ? '3d' : mode);
   if (selectedId) select(selectedId);
+
+  // Auto: measure this machine on this graph, then fit the budget to it once.
+  // Skipped where raising it is a bad idea regardless of how fast the frames
+  // look — a phone that renders 300 nodes smoothly will still cook itself on
+  // 2000, and someone who asked for less motion did not ask for more of it.
+  if (document.getElementById('budget').value === 'auto' && !localStorage.getItem(AUTO_KEY)) {
+    var small = (navigator.deviceMemory && navigator.deviceMemory <= 2) ||
+      (navigator.userAgentData && navigator.userAgentData.mobile) ||
+      matchMedia('(prefers-reduced-motion: reduce)').matches ||
+      matchMedia('(pointer: coarse)').matches;
+    if (small) {
+      localStorage.setItem(AUTO_KEY, '300');
+    } else {
+      var cost = await probeFrameCost();
+      var fits = autoCeiling(cost, raw.nodes.length, (g.shown || 0) + (g.omitted || 0));
+      localStorage.setItem(AUTO_KEY, String(fits));
+      document.getElementById('budget').title =
+        'Measured ' + cost.toFixed(1) + 'ms per frame at ' + raw.nodes.length +
+        ' pages, so this machine is set to ' + (fits === 0 ? 'all of them' : fits + ' pages') +
+        '. Pick a number to override it.';
+      if (fits !== raw.nodes.length) document.getElementById('budget').dispatchEvent(new Event('change'));
+    }
+  }
 
   // Raising the budget refetches and rebuilds rather than reloading the page,
   // so the current mode, selection and filters survive it.
