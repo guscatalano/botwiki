@@ -1069,8 +1069,15 @@ no addresses, no per-request log, and search terms are never recorded.</p>
      model tokens, and two unrelated meanings of the word sitting in adjacent
      tiles is a naming collision, not a statistic. A write token is an identity,
      so name it after what it identifies. -->
-<div class="stat" title="Write credentials issued. One per address per day; most are minted automatically for an agent on its first write."><span class="k">Writers</span><span class="v">${(writers?.total || 0).toLocaleString('en')}</span></div>
-<div class="stat" title="Writers who have made at least one request with their token."><span class="k">Writers · active</span><span class="v">${(writers?.writing || 0).toLocaleString('en')}</span></div>
+<!-- Public instances only. Self-service tokens are what these count, and a
+     private wiki has none — it has one shared operator token — so the tiles sat
+     at a truthful, useless 0 and read as a wiki nobody writes to. -->
+${
+  PUBLIC
+    ? `<div class="stat" title="Write credentials issued. One per address per day; most are minted automatically for an agent on its first write."><span class="k">Writers</span><span class="v">${(writers?.total || 0).toLocaleString('en')}</span></div>
+<div class="stat" title="Writers who have made at least one request with their token."><span class="k">Writers · active</span><span class="v">${(writers?.writing || 0).toLocaleString('en')}</span></div>`
+    : ''
+}
 <div class="stat"><span class="k">Visitors · ${days}d</span><span class="v">~${uniq.window.toLocaleString('en')}</span></div>
 <div class="stat"><span class="k">Visitors today</span><span class="v">~${uniq.today.toLocaleString('en')}</span></div>
 <div class="stat"><span class="k">Visitors all time</span><span class="v">~${uniq.allTime.toLocaleString('en')}</span></div>

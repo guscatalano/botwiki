@@ -2015,6 +2015,13 @@ try {
     const before = await (await fetch(`${pubBase}/api/stats`)).json();
     const reg = await (await fetch(`${pubBase}/api/tokens`)).json();
     check('stats reports writers at all', typeof before.writers?.total === 'number', JSON.stringify(before.writers));
+  // The tiles count self-service tokens, which only a public instance issues. A
+  // private wiki has one shared operator token, so they read a truthful and
+  // useless 0 and made it look like nobody writes there.
+  const pubStats = await (await fetch(`${pubBase}/stats`)).text();
+  const privStats = await (await fetch(`${base}/stats`, { headers: auth })).text();
+  check('a public instance shows the writer tiles', pubStats.includes('>Writers<'));
+  check('a private one does not', !privStats.includes('>Writers<'));
     check('the writer count matches the register', before.writers.total === reg.tokens.length,
       `stats ${before.writers?.total} vs register ${reg.tokens.length}`);
     check('and there are actually writers to count', reg.tokens.length > 0);
