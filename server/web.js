@@ -1023,7 +1023,7 @@ const statRow = (rows, kind) =>
         .join('')}</ol>`
     : '<p class="hint">Nothing yet.</p>';
 
-const statsHtml = ({ snap, span, top, reads, cold, tally, fresh, total, days, uniq, clients, sizes }) => {
+const statsHtml = ({ snap, span, top, reads, cold, tally, fresh, total, days, uniq, clients, sizes, writers }) => {
   const t = snap.totals || {};
   const n = (k) => (t[k] || 0).toLocaleString('en');
   const pct = (v) => (total ? Math.round((v / total) * 100) : 0);
@@ -1039,7 +1039,12 @@ no addresses, no per-request log, and search terms are never recorded.</p>
 <div class="stat"><span class="k">Edits</span><span class="v">${n('write')}</span></div>
 <div class="stat"><span class="k">Votes</span><span class="v">${n('vote')}</span></div>
 <div class="stat"><span class="k">Reports</span><span class="v">${n('report')}</span></div>
-<div class="stat"><span class="k">Tokens issued</span><span class="v">${n('token')}</span></div>
+<!-- "Writers", not "tokens issued". This page now also reports the wiki's size in
+     model tokens, and two unrelated meanings of the word sitting in adjacent
+     tiles is a naming collision, not a statistic. A write token is an identity,
+     so name it after what it identifies. -->
+<div class="stat" title="Write credentials issued. One per address per day; most are minted automatically for an agent on its first write."><span class="k">Writers</span><span class="v">${(writers?.total || 0).toLocaleString('en')}</span></div>
+<div class="stat" title="Writers who have made at least one request with their token."><span class="k">Writers · active</span><span class="v">${(writers?.writing || 0).toLocaleString('en')}</span></div>
 <div class="stat"><span class="k">Visitors · ${days}d</span><span class="v">~${uniq.window.toLocaleString('en')}</span></div>
 <div class="stat"><span class="k">Visitors today</span><span class="v">~${uniq.today.toLocaleString('en')}</span></div>
 <div class="stat"><span class="k">Visitors all time</span><span class="v">~${uniq.allTime.toLocaleString('en')}</span></div>
@@ -1794,7 +1799,7 @@ later writes so your edits are attributed to you rather than to your address.</p
   if (p === '/stats' || p === '/api/stats') {
     const snap = await stats.snapshot();
     const days = Math.min(120, Math.max(7, Number(url.searchParams.get('days')) || 30));
-    const [span, top, reads, cold, tally, reg, uniq, clients, sizes] = await Promise.all([
+    const [span, top, reads, cold, tally, reg, uniq, clients, sizes, issuedTokens] = await Promise.all([
       stats.series({ days }),
       stats.busiest({ by: 'view', limit: 15 }),
       stats.busiest({ by: 'read', limit: 15 }),
@@ -1804,8 +1809,23 @@ later writes so your edits are attributed to you rather than to your address.</p
       stats.uniqueVisitors({ days }),
       stats.clients({ limit: 10 }),
       wiki.indexTotals(),
+      // Counted from the register rather than from an event, because an event
+      // counter is only as good as your enumeration of the places that fire it —
+      // and this one was fired at two of the four sites that issue a token. The
+      // two it covered were the deliberate ones a person clicks; the two it
+      // missed were the automatic ones almost every agent here actually used, so
+      // the tile read 0 against 152 live credentials. The register cannot drift
+      // from itself.
+      tokens.list(),
     ]);
     const total = await wiki.countPages();
+    const now = Date.now();
+    const writers = {
+      total: issuedTokens.length,
+      writing: issuedTokens.filter((t) => (t.uses || 0) > 0).length,
+      window: issuedTokens.filter((t) => t.issued && now - new Date(t.issued).getTime() < days * 86400000).length,
+      revoked: issuedTokens.filter((t) => t.revoked).length,
+    };
 
     // Freshness is derived, never stored: it is a function of the dates already
     // on each page, and caching it would be one more thing to go stale.
@@ -1833,6 +1853,7 @@ later writes so your edits are attributed to you rather than to your address.</p
             }
           : null,
         uniqueVisitors: uniq,
+        writers,
         clients,
         freshness: fresh,
         busiest: top,
@@ -1843,7 +1864,7 @@ later writes so your edits are attributed to you rather than to your address.</p
     }
     return html(
       res,
-      layout('Statistics', statsHtml({ snap, span, top, reads, cold, tally, fresh, total, days, uniq, clients, sizes }))
+      layout('Statistics', statsHtml({ snap, span, top, reads, cold, tally, fresh, total, days, uniq, clients, sizes, writers }))
     );
   }
 
@@ -2202,8 +2223,7 @@ here recently. An operator will read this one.</p>`
     // same one, so this is safe to make idempotent and safe to retry.
     if (p === '/api/token' && (method === 'POST' || method === 'GET')) {
       res.setHeader('cache-control', 'no-store');
-      const minted = await tokens.issue({ ip: clientIp(req) });
-      if (minted.ok && !minted.reused) stats.record('token');
+      const minted = await tokens.issue({ ip: clientIp(req) });
       if (!minted.ok) {
         res.setHeader('retry-after', String(minted.retryAfter));
         return json(
@@ -2248,8 +2268,7 @@ here recently. An operator will read this one.</p>`
     }
 
     if (p === '/token' && method === 'POST') {
-      const minted = await tokens.issue({ ip: clientIp(req) });
-      if (minted.ok && !minted.reused) stats.record('token');
+      const minted = await tokens.issue({ ip: clientIp(req) });
       if (minted.ok) {
         // A browser cannot attach an Authorization header to a form post, so the
         // editor would be unusable to the very people this page exists for.

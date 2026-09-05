@@ -1831,6 +1831,39 @@ try {
     for (let i = 0; i < 14; i++) await wiki.deletePage(`scratch/tagged-${i}`);
   }
 
+  // A count that came from an event counter read 0 against 152 live tokens,
+  // because it was incremented at two of the four places that issue one — and
+  // the two it missed were the automatic paths nearly every agent uses. Counted
+  // from the register now, which cannot disagree with itself.
+  {
+    const before = await (await fetch(`${pubBase}/api/stats`)).json();
+    const reg = await (await fetch(`${pubBase}/api/tokens`)).json();
+    check('stats reports writers at all', typeof before.writers?.total === 'number', JSON.stringify(before.writers));
+    check('the writer count matches the register', before.writers.total === reg.tokens.length,
+      `stats ${before.writers?.total} vs register ${reg.tokens.length}`);
+    check('and there are actually writers to count', reg.tokens.length > 0);
+
+    // Issue one by the automatic path — the one the old counter did not see —
+    // and both numbers must move together.
+    await fetch(`${pubBase}/api/write?page=scratch/counted&content=hello&title=Counted`, {
+      headers: { 'x-forwarded-for': '203.0.113.77' },
+    });
+    const after = await (await fetch(`${pubBase}/api/stats`)).json();
+    const reg2 = await (await fetch(`${pubBase}/api/tokens`)).json();
+    check('an auto-issued token is counted', after.writers.total === reg2.tokens.length,
+      `stats ${after.writers?.total} vs register ${reg2.tokens.length}`);
+    // Not asserting the count rose: this instance does not trust X-Forwarded-For,
+    // so the write came from the same address as everything else in this run and
+    // the daily cap correctly handed back the token it already had. That reuse
+    // is the behaviour worth checking here.
+    check('a second write from one address reuses its token', after.writers.total === before.writers.total,
+      `${before.writers?.total} -> ${after.writers?.total}`);
+    check('writers who have used their token are counted separately',
+      after.writers.writing <= after.writers.total && after.writers.writing > 0,
+      `${after.writers?.writing} of ${after.writers?.total}`);
+    await wiki.deletePage('scratch/counted').catch(() => {});
+  }
+
   // Parity across the three doors, asserted by capability rather than by
   // endpoint — an endpoint list can be complete while the wiki is still
   // lopsided. Drift happens the same way every time: a feature gets built where
