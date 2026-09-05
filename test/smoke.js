@@ -1953,6 +1953,49 @@ try {
     await wiki.deletePage('scratch/counted').catch(() => {});
   }
 
+  // Every surface that hands somebody a whole page must count it.
+  //
+  // Unlike writes and searches this cannot be counted at the store: readPage()
+  // is called constantly by listing, indexing, the graph and search itself, and
+  // counting there would measure the code loading pages rather than anyone being
+  // given one. Being served is genuinely a fact about the surface.
+  //
+  // So the list is hard-coded, and that is the point. A loop over a route table
+  // would silently cover a new endpoint and prove nobody had thought about it;
+  // this fails until someone adds the row, which is the moment to decide whether
+  // it is a read.
+  {
+    await wiki.writePage('scratch/readcount', '# Read me\n\nbody', { title: 'Read me' });
+    // Read through the server's own /api/stats, not the local module: the web
+    // server is a separate process and buffers its counts for five seconds.
+    // snapshot() flushes before reading, so asking it is what makes its pending
+    // writes land — the first version of this test read the test process's
+    // counters and reported every surface as broken, including ones that work.
+    const totals = async (k) => ((await (await fetch(`${pubBase}/api/stats`)).json()).totals || {})[k] || 0;
+    const SERVERS = [
+      ['/w/<slug>', `/w/scratch/readcount`, 'view'],
+      ['/api/page/<slug>', `/api/page/scratch/readcount`, 'read'],
+      ['/raw/<slug>', `/raw/scratch/readcount`, 'read'],
+      ['/api/random', `/api/random`, 'read'],
+    ];
+    const missed = [];
+    for (const [name, path, kind] of SERVERS) {
+      const before = await totals(kind);
+      await fetch(`${pubBase}${path}`);
+      const after = await totals(kind);
+      if (after <= before) missed.push(`${name} (${kind} ${before} -> ${after})`);
+    }
+    check('every surface that serves a page counts it', missed.length === 0, missed.join(', '));
+
+    // /random hands the reader to /w/, which counts itself — a redirect must not
+    // count twice.
+    const v0 = await totals('view');
+    await fetch(`${pubBase}/random`, { redirect: 'follow' });
+    const v1 = await totals('view');
+    check('a redirect to a page counts once, not twice', v1 - v0 <= 1, `view +${v1 - v0}`);
+    await wiki.deletePage('scratch/readcount');
+  }
+
   // Parity across the three doors, asserted by capability rather than by
   // endpoint — an endpoint list can be complete while the wiki is still
   // lopsided. Drift happens the same way every time: a feature gets built where
@@ -2390,7 +2433,11 @@ try {
   const statsPage = await fetch(`${pubBase}/stats`);
   const statsHtmlBody = await statsPage.text();
   check('the stats page renders', statsPage.status === 200);
-  check('it separates agent reads from browser views', statsHtmlBody.includes('Agent reads') && statsHtmlBody.includes('Browser views'));
+  // Labelled by door rather than by who, because the door is the only half the
+  // wiki knows: the client table on this same page shows curl and an
+  // unrecognised "Other" as the bulk of what fetches the HTML page.
+  check('it separates the html page from the api surfaces', statsHtmlBody.includes('Page views') && statsHtmlBody.includes('API &amp; MCP reads'));
+  check('it does not claim to know a browser from an agent', !statsHtmlBody.includes('Browser views') && !/>Agent reads</.test(statsHtmlBody));
   check('it shows a freshness breakdown', statsHtmlBody.includes('freshbar'));
   check('it never divides by a zero page count', !statsHtmlBody.includes('NaN') && !statsHtmlBody.includes('Infinity'));
   const statsJson = await (await fetch(`${pubBase}/api/stats`)).json();

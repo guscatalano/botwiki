@@ -1035,8 +1035,15 @@ no addresses, no per-request log, and search terms are never recorded.</p>
 
 <div class="statgrid">
 <div class="stat"><span class="k">Pages</span><span class="v">${total.toLocaleString('en')}</span></div>
-<div class="stat"><span class="k">Browser views</span><span class="v">${n('view')}</span></div>
-<div class="stat"><span class="k">Agent reads</span><span class="v">${n('read')}</span></div>
+<!-- These say which door, not who came through it, because which door is the
+     only one of the two the wiki actually knows. They were labelled "Browser
+     views" and "Agent reads" until the client breakdown on this same page
+     showed curl as the third-largest family and an unrecognised "Other" as the
+     largest by far — most of what fetches the HTML page is not a browser. The
+     client table below is the honest answer to "who", and it is a guess from a
+     user-agent string even then. -->
+<div class="stat" title="The HTML page at /w/, whatever fetched it."><span class="k">Page views</span><span class="v">${n('view')}</span></div>
+<div class="stat" title="Whole pages served over the JSON API, /raw, or MCP."><span class="k">API &amp; MCP reads</span><span class="v">${n('read')}</span></div>
 <div class="stat"><span class="k">Searches</span><span class="v">${n('search')}</span></div>
 <div class="stat"><span class="k">Edits</span><span class="v">${n('write')}</span></div>
 <div class="stat"><span class="k">Votes</span><span class="v">${n('vote')}</span></div>
@@ -1092,8 +1099,8 @@ fingerprint, so it is never stored — just which kind of thing came calling.</p
 
 <h2>Last ${days} days</h2>
 <div class="trends">
-<div><h3>Agent reads</h3>${bars(span, 'read', 'reads')}</div>
-<div><h3>Browser views</h3>${bars(span, 'view', 'views')}</div>
+<div><h3>API &amp; MCP reads</h3>${bars(span, 'read', 'reads')}</div>
+<div><h3>Page views</h3>${bars(span, 'view', 'views')}</div>
 <div><h3>Edits</h3>${bars(span, 'write', 'edits')}</div>
 </div>
 <p class="hint">${[7, 30, 90]
@@ -1913,6 +1920,9 @@ later writes so your edits are attributed to you rather than to your address.</p
     res.setHeader('cache-control', 'no-store');
     if (p === '/api/random') {
       const doc = await wiki.readPage(pick.slug);
+      // Returns the whole page, so it is a read like any other. The browser half
+      // of this route redirects to /w/, which counts itself.
+      if (doc) stats.record('read', { slug: doc.slug, visitor: clientIp(req), client: req.headers['user-agent'] });
       return json(res, doc ? publicResult({ ...doc, raw: undefined }) : { error: 'empty' }, doc ? 200 : 404);
     }
     return redirect(res, `/w/${pick.slug}`);
@@ -3006,6 +3016,10 @@ text search</a>, or <a href="/random">open something at random</a>.</p>`)}`,
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'x-robots-tag': 'noindex' });
       return res.end(`no such page: ${slug}\n`);
     }
+    // A read. This is the surface most likely to be piped straight into a model,
+    // so leaving it uncounted would understate exactly the traffic the wiki
+    // exists to serve.
+    stats.record('read', { slug: doc.slug, visitor: clientIp(req), client: req.headers['user-agent'] });
     res.writeHead(200, {
       'content-type': 'text/markdown; charset=utf-8',
       'cache-control': 'no-cache',
