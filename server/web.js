@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
 import * as wiki from '../lib/wiki.js';
-import { buildGraph, relatedTo } from '../lib/graph.js';
+import { buildGraph, relatedTo, trimGraph } from '../lib/graph.js';
 import * as talk from '../lib/talk.js';
 import * as types from '../lib/types.js';
 import { find } from '../lib/find.js';
@@ -36,6 +36,10 @@ const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.WIKI_TRUST_PROXY || '');
 // should not pay for it. Everything guarded by this flag is absent — not hidden,
 // absent — from a private instance: no report link, no policy page, no routes.
 const PUBLIC = /^(1|true|yes)$/i.test(process.env.WIKI_PUBLIC || '');
+// How many nodes the graph ships unless asked otherwise. Enough to show the
+// shape — hubs, clusters, the namespaces that talk to each other — without
+// handing a browser a corpus-sized force simulation. The viewer raises it.
+const GRAPH_DEFAULT_NODES = Math.max(0, Number(process.env.WIKI_GRAPH_NODES) || 300);
 
 // Teach the store which pages are pulled from view, so every read path — the
 // twenty MCP tools, the JSON API, search, listings — inherits the check instead
@@ -2467,11 +2471,20 @@ here recently. An operator will read this one.</p>`
       res,
       // No allowStale here: somebody asking for the graph wants the current
       // shape of the wiki, and a page written a second ago should be in it.
-      await buildGraph({
-        includeSimilar: url.searchParams.get('similar') !== '0',
-        includeTags: url.searchParams.get('tags') !== '0',
-        minSimilarity: Number(url.searchParams.get('min')) || undefined,
-      })
+      //
+      // Trimmed to a node budget by default. The whole graph at this corpus is
+      // 4.2MB and 1,375 nodes, which the server serves in under a second and the
+      // browser then has to parse and run a force simulation over. `limit=0`
+      // asks for all of it, deliberately, rather than being the default nobody
+      // chose.
+      trimGraph(
+        await buildGraph({
+          includeSimilar: url.searchParams.get('similar') !== '0',
+          includeTags: url.searchParams.get('tags') !== '0',
+          minSimilarity: Number(url.searchParams.get('min')) || undefined,
+        }),
+        url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : GRAPH_DEFAULT_NODES
+      )
     );
   }
   if (p.startsWith('/api/talk/')) {

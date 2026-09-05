@@ -2246,6 +2246,44 @@ try {
     for (const s of ['scratch/enc', 'scratch/about-enc', 'scratch/enc-json']) await wiki.deletePage(s).catch(() => {});
   }
 
+  // The graph ships a node budget, not the corpus. The server answers fast
+  // because the build is memoised; the cost is the browser parsing megabytes
+  // and running a force simulation over every node.
+  {
+    const graphMod = await import('../lib/graph.js');
+    const full = await graphMod.buildGraph();
+
+    const trimmed = graphMod.trimGraph(full, 3);
+    check('the graph trims to a node budget', trimmed.nodes.length <= 3, String(trimmed.nodes.length));
+    check('and says how many it left out', trimmed.omitted === full.nodes.length - trimmed.nodes.length,
+      `${trimmed.omitted} vs ${full.nodes.length - trimmed.nodes.length}`);
+    check('and how many of those were unconnected', typeof trimmed.omittedOrphans === 'number');
+    // An edge to a node that is not on screen would draw to nowhere.
+    const present = new Set(trimmed.nodes.map((n) => n.id));
+    check('every edge kept has both ends', trimmed.edges.every((e) => present.has(e.source) && present.has(e.target)));
+    // Busiest first, or the budget hides the structure and keeps the periphery.
+    const deg = new Map(full.nodes.map((n) => [n.id, 0]));
+    for (const e of full.edges) {
+      deg.set(e.source, deg.get(e.source) + 1);
+      deg.set(e.target, deg.get(e.target) + 1);
+    }
+    const keptMin = Math.min(...trimmed.nodes.map((n) => deg.get(n.id)));
+    const droppedMax = Math.max(...full.nodes.filter((n) => !present.has(n.id)).map((n) => deg.get(n.id)), -1);
+    check('it keeps the busiest pages', keptMin >= droppedMax, `kept min ${keptMin}, dropped max ${droppedMax}`);
+    // The corpus-wide figures survive, so a viewer can tell how much it is seeing.
+    check('full-corpus stats survive the trim', trimmed.stats.pages === full.stats.pages);
+
+    check('a budget above the corpus trims nothing', graphMod.trimGraph(full, 9999).omitted === 0);
+    check('and zero means everything', graphMod.trimGraph(full, 0).nodes.length === full.nodes.length);
+
+    const capped = await (await fetch(`${pubBase}/api/graph?limit=2`)).json();
+    check('/api/graph honours the limit', capped.nodes.length <= 2, String(capped.nodes.length));
+    const all = await (await fetch(`${pubBase}/api/graph?limit=0`)).json();
+    check('/api/graph?limit=0 returns the whole graph', all.nodes.length === full.nodes.length);
+    const graphHtmlBudget = await (await fetch(`${pubBase}/graph`)).text();
+    check('the graph page offers a budget control', graphHtmlBudget.includes('id="budget"'));
+  }
+
   // The graph legend is one chip per namespace, overlaid on the canvas it is
   // filtering, and namespaces only ever get added — so it grew until it covered
   // the corner. Folded after three there instead of ten: the bar sits on the

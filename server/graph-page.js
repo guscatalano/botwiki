@@ -87,6 +87,10 @@ svg.grabbing{cursor:grabbing}
    until it covered the corner of the canvas it sits on. Three, then a fold.
    The panel opens upward because the bar is anchored to the bottom of the
    stage and downward is off the screen. */
+.budget{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);white-space:nowrap}
+.budget select{padding:3px 6px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);font:inherit;font-size:12px;cursor:pointer}
+.budget select:hover{border-color:var(--accent)}
+.stage.busy{opacity:.55;transition:opacity .12s}
 .legendmore{position:relative}
 .legendmore summary{list-style:none;cursor:pointer}
 .legendmore summary::-webkit-details-marker{display:none}
@@ -178,6 +182,15 @@ kbd{font:inherit;font-size:11px;background:var(--code);border:1px solid var(--li
   <label class="strwrap" title="Hide connections weaker than this">
     <span id="strlbl">all</span>
     <input type="range" id="minstr" min="0" max="90" value="0" step="5">
+  </label>
+  <label class="budget" title="How many pages to draw. The busiest are kept first — raising this costs load time, not accuracy.">
+    <span id="budgetlbl">pages</span>
+    <select id="budget">
+      <option value="300">300</option>
+      <option value="600">600</option>
+      <option value="1200">1200</option>
+      <option value="0">all</option>
+    </select>
   </label>
   <div class="spacer"></div>
   <div class="modesw"><button id="sGlobal">global</button><button id="sLocal">local</button></div>
@@ -977,22 +990,37 @@ addEventListener('keydown', e => {
 });
 
 // ---- load -------------------------------------------------------------------
-(async () => {
-  const g = await (await fetch('/api/graph')).json();
+//
+// A node budget, not the whole corpus. The full graph here is thousands of nodes
+// and several megabytes, and the cost is not the server — it answers in under a
+// second — it is the browser parsing that and running a force simulation over
+// it. The busiest pages are kept first, so the shape survives, and the picker
+// raises the budget for anyone who wants the rest.
+async function load(limit) {
+  const budget = limit === undefined ? Number(document.getElementById('budget').value) : limit;
+  stage.classList.add('busy');
+  const g = await (await fetch('/api/graph?limit=' + budget)).json();
+  stage.classList.remove('busy');
   if (!g.nodes.length) {
     stage.innerHTML = '<div class="loading">No pages yet — <a href="/new" style="margin-left:5px">write one</a>.</div>';
     return;
   }
-  raw = { nodes: g.nodes, edges: g.edges, groups: g.groups, stats: g.stats };
-  byId = new Map(raw.nodes.map(n => [n.id, n]));
+  // Say what is not on screen. A view that quietly drops four fifths of a wiki
+  // is worse than a slow one, because nothing tells the reader to doubt it.
+  const lbl = document.getElementById('budgetlbl');
+  if (g.omitted > 0) {
+    lbl.textContent = g.shown + ' of ' + (g.shown + g.omitted);
+    lbl.title = g.omitted + ' pages not drawn, ' + g.omittedOrphans + ' of them unconnected';
+  } else {
+    lbl.textContent = 'all ' + g.shown;
+    lbl.title = 'Every page is on screen.';
+  }
+  return g;
+}
 
-  document.getElementById('stats').innerHTML =
-    '<b>' + g.stats.pages + '</b> pages · <b>' + g.stats.edges + '</b> links<br>' +
-    g.stats.links + ' explicit · ' + g.stats.tagEdges + ' tag · ' + g.stats.similarEdges + ' similar<br>' +
-    '<b>' + (g.stats.strong || 0) + '</b> strong · <b>' + (g.stats.weak || 0) + '</b> weak · avg ' +
-    (g.stats.meanStrength ?? 0) +
-    (g.stats.orphans ? '<br><b>' + g.stats.orphans + '</b> unconnected' : '');
-
+// Rebuilt whenever the node budget changes, since the group counts change with
+// it. Delegation on #legend means the click handler survives the innerHTML.
+function buildLegend() {
   const counts = {};
   for (const n of raw.nodes) counts[n.group] = (counts[n.group] || 0) + 1;
   const LEGEND_SHOWN = 3;
@@ -1014,6 +1042,22 @@ addEventListener('keydown', e => {
       ? '<details class="legendmore"><summary class="gchip">+' + rest.length + ' more</summary>' +
         '<div class="legendrest">' + rest.map(chip).join('') + '</div></details>'
       : '');
+}
+
+(async () => {
+  const g = await load();
+  if (!g) return;
+  raw = { nodes: g.nodes, edges: g.edges, groups: g.groups, stats: g.stats };
+  byId = new Map(raw.nodes.map(n => [n.id, n]));
+
+  document.getElementById('stats').innerHTML =
+    '<b>' + g.stats.pages + '</b> pages · <b>' + g.stats.edges + '</b> links<br>' +
+    g.stats.links + ' explicit · ' + g.stats.tagEdges + ' tag · ' + g.stats.similarEdges + ' similar<br>' +
+    '<b>' + (g.stats.strong || 0) + '</b> strong · <b>' + (g.stats.weak || 0) + '</b> weak · avg ' +
+    (g.stats.meanStrength ?? 0) +
+    (g.stats.orphans ? '<br><b>' + g.stats.orphans + '</b> unconnected' : '');
+
+  buildLegend();
   document.getElementById('legend').addEventListener('click', e => {
     const chip = e.target.closest('[data-g]'); if (!chip) return;
     hidden.has(chip.dataset.g) ? hidden.delete(chip.dataset.g) : hidden.add(chip.dataset.g);
@@ -1040,6 +1084,21 @@ addEventListener('keydown', e => {
   recomputeLocal();
   await setMode(new URLSearchParams(location.search).get('3d') === '1' ? '3d' : mode);
   if (selectedId) select(selectedId);
+
+  // Raising the budget refetches and rebuilds rather than reloading the page,
+  // so the current mode, selection and filters survive it.
+  document.getElementById('budget').addEventListener('change', async () => {
+    const next = await load();
+    if (!next) return;
+    raw = { nodes: next.nodes, edges: next.edges, groups: next.groups, stats: next.stats };
+    byId = new Map(raw.nodes.map(n => [n.id, n]));
+    if (selectedId && !byId.has(selectedId)) selectedId = null;
+    buildLegend();
+    recomputeLocal();
+    await setMode(mode);
+    buildSidebar();
+    if (selectedId) select(selectedId);
+  });
 })();
 
 // The renderers read their colours from CSS variables through getComputedStyle
