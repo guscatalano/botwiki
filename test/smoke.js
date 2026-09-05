@@ -2273,6 +2273,33 @@ try {
     await wiki.deletePage('scratch/sess-a');
   }
 
+  // No edge may name a node that is not in the graph. This is not cosmetic:
+  // 3d-force-graph throws "node not found" while initialising its link force and
+  // the entire view dies. It reached production because the node budget filtered
+  // dangling edges out as a side effect of trimming, so every view except the
+  // unlimited one was accidentally safe — which is exactly why "all" broke and
+  // 1200 did not.
+  {
+    const gg = await import('../lib/graph.js');
+    gg.clearGraphMemo();
+    const g = await gg.buildGraph();
+    const ids = new Set(g.nodes.map((n) => n.id));
+    const dangling = g.edges.filter((e) => !ids.has(e.source) || !ids.has(e.target));
+    check('no edge names a page that is not a node', dangling.length === 0,
+      dangling.slice(0, 3).map((e) => `${e.source}->${e.target}`).join(', '));
+
+    // The other half of the same invariant, and the one that does not depend on
+    // when a quarantine becomes visible to this process: the graph must never
+    // contain a page the store will not serve. A node nobody can open is the
+    // same defect as an edge to nobody, one step earlier.
+    let unreadable = [];
+    for (const n of g.nodes) {
+      if (!(await wiki.readPage(n.id))) unreadable.push(n.id);
+    }
+    check('every node in the graph is a page the store will serve', unreadable.length === 0,
+      unreadable.slice(0, 3).join(', '));
+  }
+
   // Similarity edges taper as the corpus grows. On a few hundred varied pages a
   // TF-IDF edge is a real finding; where a thousand pages are the same subject
   // in the same voice everything reads alike, the edges distinguish nothing, and
