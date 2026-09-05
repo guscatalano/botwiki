@@ -1552,14 +1552,51 @@ try {
   const shell = await (await fetch(`${base}/`, { headers: auth })).text();
   const skinBtns = (shell.match(/class="skins"[\s\S]*?<\/div>/) || [''])[0];
   check('the picker offers exactly two skins', (skinBtns.match(/<button/g) || []).length === 2);
-  check('no light skin is offered', !/Paper/i.test(shell));
+  // Asserted against the picker, not the whole document. It used to grep the
+  // page for a skin name, which matched a CSS comment the moment one mentioned
+  // the word — a test failing on prose that describes the thing it is testing.
+  check('no light skin is offered here', !/data-skin="lab"/.test(skinBtns));
   // Whichever skin is the default has to live on bare :root, because that is
   // what paints before any script runs.
   check('bare :root carries the default palette', /:root,\s*:root\[data-skin="mesh"\]/.test(shell));
   check('the non-default skin is attribute-only', !/:root,\s*:root\[data-skin="synth"\]/.test(shell));
   check('no light-mode media query survives', !/prefers-color-scheme/.test(shell));
-  check('the boot script always stamps a skin', /dataset\.skin=\(s==='synth'\)\?'synth':'mesh'/.test(shell));
-  check('a reader with nothing stored gets the default', /catch\(e\)\{document\.documentElement\.dataset\.skin='mesh'\}/.test(shell));
+  // Behaviour, not the exact source text — these pinned the old boot script
+  // character for character and broke on a refactor that changed nothing a
+  // reader would notice.
+  const boot = (shell.match(/<script>try\{[^<]*botwiki-skin[^<]*<\/script>/) || [''])[0];
+  check('the boot script stamps a skin', /dataset\.skin=/.test(boot), boot.slice(0, 80));
+  check('it only accepts skins this instance offers', boot.includes('["mesh","synth"]'), boot.slice(0, 120));
+  check('a reader with nothing stored gets the default', /catch\(e\)\{[^}]*dataset\.skin="mesh"\}/.test(boot), boot.slice(-60));
+
+  // A skin stored by an instance that offers it must not leak into one that does
+  // not: someone who picked Lab on the homelab box and opens the public wiki
+  // gets the public default, not an unstyled root.
+  const themeMod = await import('../server/theme.js');
+  const publicBoot = themeMod.skinBoot(themeMod.skinsFor(''), 'mesh');
+  check('an unknown stored skin falls back', publicBoot.includes('indexOf(s)>=0?s:'), publicBoot.slice(0, 90));
+
+  // The lab skin exists, is offered only on request, and declares every variable
+  // the others do — a skin missing one paints half a page in another skin.
+  check('lab is not offered unless asked for', !themeMod.skinsFor('').some((s) => s.id === 'lab'));
+  check('lab is offered when asked for', themeMod.skinsFor('mesh,synth,lab').some((s) => s.id === 'lab'));
+  const varsOf = (s) => [...s.matchAll(/--[a-z-]+:/g)].map((m) => m[0]).sort().join(',');
+  check('lab declares the same variables as mesh', varsOf(themeMod.SKIN_VARS.lab) === varsOf(themeMod.SKIN_VARS.mesh));
+  // Every skin needs a mark rule or the header silently loses its logo, and a
+  // colour that is not a colour paints nothing with no error anywhere.
+  for (const id of ['synth', 'mesh', 'lab']) {
+    check(`the ${id} skin shows a mark`, themeMod.MARK_CSS.includes(`[data-skin="${id}"] .mk-${id}`));
+    check(`the ${id} mark is emitted`, themeMod.MARKS.includes(`mk-${id}`));
+    const malformed = [...themeMod.SKIN_VARS[id].matchAll(/--[a-z-]+:\s*(#[0-9a-z]*)/gi)]
+      .filter((m) => !/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(m[1]));
+    check(`every ${id} colour is a real colour`, malformed.length === 0, malformed.map((m) => m[0]).join(', '));
+  }
+  // Three skins that all look alike would defeat the point of having a third.
+  const accentOf = (id) => (themeMod.SKIN_VARS[id].match(/--accent:(#[0-9a-f]{6})/i) || [])[1];
+  const accents = ['synth', 'mesh', 'lab'].map(accentOf);
+  check('the three skins do not share an accent', new Set(accents).size === 3, accents.join(' '));
+  check('a non-mesh default also claims bare :root', themeMod.defaultSkinCss('lab').startsWith(':root:not([data-skin])'));
+  check('and mesh needs no such rule', themeMod.defaultSkinCss('mesh') === '');
 
   // The root is the only page a stranger is guaranteed to land on, so a `home`
   // page renders there in full — and only that. The listing that used to be

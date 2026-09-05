@@ -5,14 +5,15 @@
 // The sidebar, search, detail panel and selection are shared, so switching
 // renderer never costs you your place. Both libraries are vendored, not CDN.
 
-import { TOKENS, GROUP_VARS, SKIN_BOOT, SKIN_PICKER, SKIN_CSS, SKIN_JS, MARKS, MARK_CSS } from './theme.js';
+import { TOKENS, GROUP_VARS, SKIN_CSS, SKIN_JS, MARKS, MARK_CSS } from './theme.js';
 
-export function graphPageHtml({ site = 'botwiki' } = {}) {
+export function graphPageHtml({ site = 'botwiki', skinBoot = '', skinPicker = '', defaultSkinCss = '' } = {}) {
   return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Graph · ${site}</title>
 <style>
 ${TOKENS}
+${defaultSkinCss}
 *{box-sizing:border-box}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.6 var(--font-ui);overflow:hidden;-webkit-font-smoothing:antialiased}
@@ -168,7 +169,7 @@ kbd{font:inherit;font-size:11px;background:var(--code);border:1px solid var(--li
   .sep{display:none}
   .toggles button{padding:8px 12px}
 }
-</style>${SKIN_BOOT}</head><body>
+</style>${skinBoot}</head><body>
 <div class="app">
 <header>
   <a class="brand" href="/">${MARKS}<span class="bn">${site}</span></a>
@@ -204,7 +205,7 @@ kbd{font:inherit;font-size:11px;background:var(--code);border:1px solid var(--li
   <button class="ico" id="fit" title="Fit to view (F)">⤢</button>
   <button class="ico" id="relayout" title="Re-run layout">⟳</button>
   <div class="sep"></div>
-  ${SKIN_PICKER}
+  ${skinPicker}
   <a href="/">← pages</a>
 </header>
 <div class="shell" id="shell">

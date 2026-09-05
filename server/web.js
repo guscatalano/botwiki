@@ -22,7 +22,7 @@ import * as tokens from '../lib/tokens.js';
 import * as votes from '../lib/votes.js';
 import * as stats from '../lib/stats.js';
 import { graphPageHtml } from './graph-page.js';
-import { MERMAID_JS, TOKENS, SKIN_BOOT, SKIN_PICKER, SKIN_CSS, SKIN_JS, MARKS, MARK_CSS, MASCOTS, MASCOT_CSS, PIP , FAVICON_SVG } from './theme.js';
+import { MERMAID_JS, TOKENS, SKIN_CSS, SKIN_JS, MARKS, MARK_CSS, MASCOTS, MASCOT_CSS, PIP , FAVICON_SVG, skinsFor, skinBoot, skinPicker, defaultSkinCss } from './theme.js';
 
 const HOST = process.env.WIKI_HOST || '0.0.0.0';
 const PORT = Number(process.env.WIKI_PORT || 8787);
@@ -40,6 +40,21 @@ const PUBLIC = /^(1|true|yes)$/i.test(process.env.WIKI_PUBLIC || '');
 // shape — hubs, clusters, the namespaces that talk to each other — without
 // handing a browser a corpus-sized force simulation. The viewer raises it.
 const GRAPH_DEFAULT_NODES = Math.max(0, Number(process.env.WIKI_GRAPH_NODES) || 300);
+
+// Which skins this instance offers, and which it opens on.
+//
+// Per-instance because it is instance identity, not decoration: a private wiki
+// and a public one that look alike are two wikis somebody eventually confuses,
+// and the cost of confusing them is writing something internal onto the open
+// internet. WIKI_SKINS=mesh,synth,lab and WIKI_SKIN=lab is what the homelab box
+// runs; unset, an instance gets exactly the two skins it always had.
+const INSTANCE_SKINS = skinsFor(process.env.WIKI_SKINS);
+const DEFAULT_SKIN = INSTANCE_SKINS.some((s) => s.id === process.env.WIKI_SKIN)
+  ? process.env.WIKI_SKIN
+  : INSTANCE_SKINS[0].id;
+const SKIN_BOOT = skinBoot(INSTANCE_SKINS, DEFAULT_SKIN);
+const SKIN_PICKER = skinPicker(INSTANCE_SKINS);
+const DEFAULT_SKIN_CSS = defaultSkinCss(DEFAULT_SKIN);
 
 // Teach the store which pages are pulled from view, so every read path — the
 // twenty MCP tools, the JSON API, search, listings — inherits the check instead
@@ -319,6 +334,10 @@ const mascotBox = (staleness, { size = 64, cls = '' } = {}) =>
 
 const CSS = `
 ${TOKENS}
+/* After TOKENS, so it wins: whichever skin this instance defaults to also has to
+   hold bare :root, which is what paints before the boot script runs. Empty when
+   the default is mesh, which already declares it. */
+${DEFAULT_SKIN_CSS}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 var(--font-ui);-webkit-font-smoothing:antialiased}
 a{color:var(--accent);text-decoration:none}
@@ -3008,7 +3027,8 @@ so they are grouped by writer, tool and day instead. That is an approximation an
     ));
   }
 
-  if (p === '/graph') return html(res, graphPageHtml({ site: SITE }));
+  if (p === '/graph')
+    return html(res, graphPageHtml({ site: SITE, skinBoot: SKIN_BOOT, skinPicker: SKIN_PICKER, defaultSkinCss: DEFAULT_SKIN_CSS }));
 
   // d3 is vendored from node_modules rather than a CDN, so the graph still works
   // when the container has no route to the internet.

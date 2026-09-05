@@ -16,10 +16,10 @@
 const UI_SANS = 'ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
 const UI_MONO = 'ui-monospace,SFMono-Regular,"Cascadia Mono",Menlo,Consolas,monospace';
 
-export const TOKENS = `
-/* SYNTH — black and gold. Gold has meant "verified" here since the first mark,
-   so the accent is already carrying the product's meaning rather than a mood. */
-:root[data-skin="synth"]{
+// The variables per skin, kept apart from the rules that apply them so the
+// default can be repeated on bare `:root` without the values existing twice.
+export const SKIN_VARS = {
+  synth: `
   --bg:#07070a;--panel:#0f1014;--ink:#d9dde3;--muted:#8e959f;--line:#24262e;
   --accent:#d9a441;--accent-soft:#1c1710;--code:#101218;--warn:#c4483a;
   --g-root:#d9a441;--g-hosts:#6fa88c;--g-services:#c47a3a;--g-runbooks:#7f93b8;
@@ -27,7 +27,31 @@ export const TOKENS = `
   --edge:#2a2c34;--edge-similar:#1d1f26;
   --font-ui:${UI_SANS};
   --scan:rgba(255,255,255,.018);
-  color-scheme:dark;
+  color-scheme:dark;`,
+  mesh: `
+  --bg:#050806;--panel:#0a0f0b;--ink:#b9f5d3;--muted:#4f9e74;--line:#17301f;
+  --accent:#41e08a;--accent-soft:#0c2118;--code:#081008;--warn:#e0913a;
+  --g-root:#41e08a;--g-hosts:#7ff0b0;--g-services:#e0913a;--g-runbooks:#2fbf74;
+  --g-meta:#3f7a5c;--g-decisions:#a8f0c4;--g-scratch:#5fd49a;
+  --edge:#1c3a28;--edge-similar:#122619;
+  --font-ui:${UI_MONO};
+  --scan:rgba(65,224,138,.03);
+  color-scheme:dark;`,
+  lab: `
+  --bg:#070b12;--panel:#0d131d;--ink:#c3d4ea;--muted:#6f88a8;--line:#1c2838;
+  --accent:#4aa3ff;--accent-soft:#0d1c2e;--code:#0a1119;--warn:#e0913a;
+  --g-root:#4aa3ff;--g-hosts:#5fd0c8;--g-services:#e0913a;--g-runbooks:#8d9bf0;
+  --g-meta:#5a7391;--g-decisions:#c98bd8;--g-scratch:#7fb4e0;
+  --edge:#1d3350;--edge-similar:#15202e;
+  --font-ui:${UI_MONO};
+  --scan:rgba(74,163,255,.028);
+  color-scheme:dark;`,
+};
+
+export const TOKENS = `
+/* SYNTH — black and gold. Gold has meant "verified" here since the first mark,
+   so the accent is already carrying the product's meaning rather than a mood. */
+:root[data-skin="synth"]{${SKIN_VARS.synth}
 }
 
 /* MESH — phosphor terminal, and the default. Monochrome green by design, with
@@ -40,15 +64,20 @@ export const TOKENS = `
    has run, or when storage is unavailable. Whichever skin is the default has to
    hold both. */
 :root,
-:root[data-skin="mesh"]{
-  --bg:#050806;--panel:#0a0f0b;--ink:#b9f5d3;--muted:#4f9e74;--line:#17301f;
-  --accent:#41e08a;--accent-soft:#0c2118;--code:#081008;--warn:#e0913a;
-  --g-root:#41e08a;--g-hosts:#7ff0b0;--g-services:#e0913a;--g-runbooks:#2fbf74;
-  --g-meta:#3f7a5c;--g-decisions:#a8f0c4;--g-scratch:#5fd49a;
-  --edge:#1c3a28;--edge-similar:#122619;
-  --font-ui:${UI_MONO};
-  --scan:rgba(65,224,138,.03);
-  color-scheme:dark;
+:root[data-skin="mesh"]{${SKIN_VARS.mesh}
+}
+
+/* LAB — cold blue. Offered only where an instance asks for it, and the reason it
+   exists is instance identity rather than taste: a private wiki and a public one
+   that look alike are two wikis somebody will eventually confuse, and the cost of
+   confusing them is writing something internal onto the open internet.
+
+   Distinguished by hue, not by brightness. The first version of this was a light
+   paper theme, which was certainly unmistakable and also glaring next to two dark
+   skins — and a skin nobody wants to look at gets switched away from, which
+   defeats the whole point of having it. Gold, green, blue: three accents nobody
+   confuses at a glance, all comfortable to sit in. */
+:root[data-skin="lab"]{${SKIN_VARS.lab}
 }
 
 /* Scanlines, painted only where a skin asks for them. Fixed and inert so they
@@ -86,13 +115,29 @@ export const MARK_MESH = `<svg class="mk mk-mesh" viewBox="0 0 24 24" aria-hidde
 <circle cx="12" cy="11.6" r="1.7" fill="currentColor"/>
 </svg>`;
 
-export const MARKS = `${MARK_SYNTH}${MARK_MESH}`;
+// LAB — a caliper over a rule. Drawn rather than borrowed because the point of
+// this skin is that the private instance does not look like the public one, and
+// the mark is the thing a reader recognises before they have read anything.
+export const MARK_LAB = `<svg class="mk mk-lab" viewBox="0 0 24 24" aria-hidden="true">
+<g stroke="currentColor" fill="none" stroke-width="1.4" stroke-linecap="round">
+<path d="M4 19.5 H20"/>
+<path d="M7 19.5 V16.5"/><path d="M12 19.5 V15"/><path d="M17 19.5 V16.5"/>
+<path d="M8.5 4.5 L12 12 L15.5 4.5"/>
+</g>
+<circle cx="12" cy="12" r="1.7" fill="currentColor"/>
+<path d="M8.5 4.5 H15.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+</svg>`;
+
+export const MARKS = `${MARK_SYNTH}${MARK_MESH}${MARK_LAB}`;
 
 export const MARK_CSS = `
 .mk{display:none;width:22px;height:22px;flex:none;color:var(--accent);vertical-align:-5px}
 :root:not([data-skin]) .mk-mesh{display:inline-block}
 :root[data-skin="synth"] .mk-synth{display:inline-block}
 :root[data-skin="mesh"] .mk-mesh{display:inline-block}
+/* Without this the lab skin matches no rule and the header shows no mark at all,
+   which is how a new skin silently loses the logo. */
+:root[data-skin="lab"] .mk-lab{display:inline-block}
 .brand{display:inline-flex;align-items:center;gap:8px}
 /* The old rule painted the only span in .brand with the accent, back when that
    span was just the trailing full stop. The site name now lives in one. */
@@ -101,10 +146,38 @@ export const MARK_CSS = `
 
 // The skin picker, shared by the page views and the graph so the control looks
 // and behaves the same in both.
-export const SKINS = [
+const ALL_SKINS = [
   { id: 'mesh', label: 'Mesh' },
   { id: 'synth', label: 'Synth' },
+  { id: 'lab', label: 'Lab' },
 ];
+
+/**
+ * Which skins an instance offers, and which it starts on.
+ *
+ * Per-instance because this is not only a matter of taste. A private wiki and a
+ * public one that look identical are two wikis somebody will eventually mix up,
+ * and the cost of mixing them up is writing something internal onto the open
+ * internet. Giving the private box a look the public one does not have makes
+ * that mistake visible before the writing rather than after it.
+ *
+ * The public instance is left with exactly the two skins it had.
+ */
+export function skinsFor(offered) {
+  const want = String(offered || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  // Kept in the order asked for, so an instance can put its own skin first in
+  // the picker rather than third behind the two it shares with everyone else.
+  // Deduplicated, or a typo in the env file puts the same button in twice.
+  const picked = want.length
+    ? [...new Set(want)].map((id) => ALL_SKINS.find((s) => s.id === id)).filter(Boolean)
+    : ALL_SKINS.slice(0, 2);
+  return picked.length ? picked : ALL_SKINS.slice(0, 2);
+}
+
+export const SKINS = ALL_SKINS.slice(0, 2);
 
 // Runs in <head>, before the body paints, so a chosen skin never flashes the
 // default first. Deliberately tiny and deliberately wrapped in try/catch:
@@ -114,11 +187,41 @@ export const SKINS = [
 // light skin have '' or nothing stored, and both resolve to mesh here rather
 // than to an unstyled root; it also lets the picker mark the right button on the
 // first paint instead of after the script runs.
-export const SKIN_BOOT = `<script>try{var s=localStorage.getItem('botwiki-skin');document.documentElement.dataset.skin=(s==='synth')?'synth':'mesh'}catch(e){document.documentElement.dataset.skin='mesh'}</script>`;
+export const SKIN_BOOT = skinBoot(SKINS, 'mesh');
 
-export const SKIN_PICKER = `<div class="skins" role="group" aria-label="Theme">${SKINS.map(
-  (s) => `<button type="button" data-skin="${s.id}" aria-pressed="false">${s.label}</button>`
-).join('')}</div>`;
+/**
+ * Stamps the attribute in <head> before the body paints.
+ *
+ * Takes the instance's own skin list and default, so a stored choice that this
+ * instance does not offer — a reader who picked Lab at home and then opened the
+ * public wiki — falls back to the default rather than to an unstyled root.
+ */
+export function skinBoot(list, dflt) {
+  const ids = JSON.stringify(list.map((s) => s.id));
+  const d = JSON.stringify(dflt);
+  return `<script>try{var ok=${ids},d=${d},s=localStorage.getItem('botwiki-skin');document.documentElement.dataset.skin=ok.indexOf(s)>=0?s:d}catch(e){document.documentElement.dataset.skin=${d}}</script>`;
+}
+
+export const SKIN_PICKER = skinPicker(SKINS);
+
+export function skinPicker(list) {
+  return `<div class="skins" role="group" aria-label="Theme">${list
+    .map((s) => `<button type="button" data-skin="${s.id}" aria-pressed="false">${s.label}</button>`)
+    .join('')}</div>`;
+}
+
+/**
+ * The default skin's variables, repeated on bare `:root`.
+ *
+ * The bare rule is what paints before any script has run and when storage is
+ * unavailable, so whichever skin an instance defaults to has to hold it. mesh
+ * already declares it inline above; anything else needs this, or the lab box
+ * flashes a green terminal on every load before settling into paper.
+ */
+export function defaultSkinCss(id) {
+  if (!id || id === 'mesh') return '';
+  return `:root:not([data-skin]){${SKIN_VARS[id] || ''}}`;
+}
 
 export const SKIN_CSS = `
 .skins{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
