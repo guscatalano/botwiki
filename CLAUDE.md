@@ -30,6 +30,18 @@ These have each caused a shipped bug. Three were invisible to a passing test run
 - **Never put a backtick in a comment inside `server/graph-page.js`.** The whole
   file is one template literal; a backtick in a code comment terminates it
   mid-file. Write `t()`, not the backticked form.
+- **Do not edit source through the shell.** A `node -e` / `python -c` one-liner
+  must survive two levels of escaping, and this repo is template literals all the
+  way down. It fails two ways: matching nothing while reporting success, or
+  writing back a function whose *body has been eaten* but which still parses.
+  Use Write/Edit. If a scripted edit is truly unavoidable, `node --check` the file
+  afterwards and read back the region — "the script printed true" is not evidence
+  the edit was right.
+- **`server/*.js` is CRLF in the working copy**; `lib/` and `test/` are LF. Git
+  normalises everything to LF on commit, so this is about what a scripted edit
+  sees, not what is stored. A CR count appearing in `lib/` is yours — check with
+  `git diff -w` before assuming a change is real. Count with node, not
+  `grep -c $'\r'`, which counts lines and quotes unreliably through a shell.
 - **Scripted edits on Windows write CRLF.** Harmless in JS, fatal in
   `deploy/*.sh` — bash chokes on `set -euo pipefail`. Run `bash -n` after any
   scripted edit to a shell script or unit file.
@@ -49,7 +61,10 @@ These have each caused a shipped bug. Three were invisible to a passing test run
   verification, and only for a fact a probe actually compared.
 - **`type` and `strength` are orthogonal** on graph edges: type names the most
   trustworthy evidence, strength says how much there is.
-- **Edited is not verified.** Freshness measures from the last confirmation.
+- **Edited is not verified.** Freshness measures from the last confirmation, and a
+  page nobody has ever confirmed can never read `fresh` — at best `aging`, however
+  recently it was written. An edit made *while looking at the live system* is both,
+  and says so with `wiki_write { verified: true }`; a plain edit resets nothing.
 - Page bodies may be written by agents, so `server/web.js` renders raw HTML in a
   page as escaped text. Keep it that way.
 - The web server hand-rolls its routing on `node:http`. Add routes in `route()`.
