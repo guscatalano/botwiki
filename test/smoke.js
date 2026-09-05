@@ -315,6 +315,38 @@ check('a private wiki keeps the real address', onDisk3.includes('198.51.100.77')
 check('a private wiki keeps the real hostname', onDisk3.includes('someones-laptop'));
 for (const s of ['scratch/prov', 'scratch/prov2', 'scratch/prov3']) await wiki.deletePage(s);
 
+// --- a write that succeeded must not report failure --------------------------
+// Found the hard way: an unwritable history file made a PUT answer 500 on a page
+// that was already durably on disk. The caller retries a write that worked, or
+// gives up and reports it impossible.
+{
+  const histDir = path.join(TMP, '.history');
+  await fs.mkdir(histDir, { recursive: true });
+  const res1 = await wiki.writePage('scratch/histfail', '# One\n\nbody', { title: 'One' });
+  check('a normal write records its history', res1.historyRecorded === true);
+
+  // Make the revision log unwritable by replacing it with a directory — the one
+  // way to guarantee EISDIR/EACCES on every platform this runs on.
+  const logPath = path.join(histDir, 'scratch', 'histfail.jsonl');
+  await fs.rm(logPath, { force: true });
+  await fs.mkdir(logPath, { recursive: true });
+
+  let threw = null;
+  let res2 = null;
+  try {
+    res2 = await wiki.writePage('scratch/histfail', '# Two\n\nchanged', { title: 'Two' });
+  } catch (e) {
+    threw = e;
+  }
+  check('an unrecordable history does not fail the write', threw === null, String(threw?.message).slice(0, 80));
+  check('and the page really did change', (await wiki.readPage('scratch/histfail'))?.body.includes('changed'));
+  // Silent to the caller is not the same as invisible: something has to say so.
+  check('but the caller is told the history is missing', res2?.historyRecorded === false, JSON.stringify(res2?.historyRecorded));
+
+  await fs.rm(logPath, { recursive: true, force: true });
+  await wiki.deletePage('scratch/histfail');
+}
+
 // --- what a delete leaves behind ---------------------------------------------
 // Votes and counters were cleaned up on delete; the discussion and the
 // moderation state were not. That left a comment in the review queue pointing at
@@ -1397,26 +1429,38 @@ try {
   check('the boot script always stamps a skin', /dataset\.skin=\(s==='synth'\)\?'synth':'mesh'/.test(shell));
   check('a reader with nothing stored gets the default', /catch\(e\)\{document\.documentElement\.dataset\.skin='mesh'\}/.test(shell));
 
-  // The index is the only page a stranger is guaranteed to land on, so a `home`
-  // page has to render there in full rather than sit as one row in the listing.
+  // The root is the only page a stranger is guaranteed to land on, so a `home`
+  // page renders there in full — and only that. The listing that used to be
+  // stapled underneath it lives at /pages, which the nav links to; a front page
+  // whose second half is a 150-row directory is one nobody reaches the end of.
   await wiki.writePage('home', '# Front door\n\nWhat this wiki is.', { title: 'Home' });
   const idxHome = await (await fetch(`${base}/`, { headers: auth })).text();
-  check('index renders the home page body', idxHome.includes('Front door'));
-  check('index still lists pages below home', idxHome.includes('id="all-pages"'));
-  check('home is not also a row in its own listing', !idxHome.includes('href="/w/home"'));
+  check('the root renders the home page body', idxHome.includes('Front door'));
+  check('the root no longer lists every page', !idxHome.includes('id="all-pages"') && !idxHome.includes('<ul class="pages">'));
+  check('the root does not carry the tag chips either', !idxHome.includes('class="chips"'));
+  check('but the nav still points at the listing', idxHome.includes('href="/pages"'));
   check('title is not doubled when home supplies the heading', !/<title>[^<]*·[^<]*<\/title>/.test(idxHome), (idxHome.match(/<title>[^<]*/) || [])[0]);
+
+  // A tag filter is a listing, so it belongs with the listings rather than
+  // growing a second one at the root.
+  const tagRedirect = await fetch(`${base}/?tag=host`, { headers: auth, redirect: 'manual' });
+  check('/?tag= redirects to the listing', [301, 302, 303, 307, 308].includes(tagRedirect.status), String(tagRedirect.status));
+  check('and keeps the tag when it does', (tagRedirect.headers.get('location') || '').includes('tag=host'), tagRedirect.headers.get('location'));
 
   // `per` has a floor of 10, so forcing a second page means actually having
   // more than ten pages — the seed corpus alone never paginates.
   const filler = Array.from({ length: 12 }, (_, i) => `scratch/fill-${i}`);
   for (const slug of filler) await wiki.writePage(slug, '# Filler', { title: `Filler ${slug}` });
-  const idxPage2 = await (await fetch(`${base}/?p=2&per=10`, { headers: auth })).text();
-  check('home renders only on the first page of the listing', !idxPage2.includes('Front door'));
+  const idxPage2 = await (await fetch(`${base}/pages?p=2&per=10`, { headers: auth })).text();
+  check('the listing paginates', idxPage2.includes('<ul class="pages">'));
+  check('and never renders home into it', !idxPage2.includes('Front door'));
   for (const slug of filler) await wiki.deletePage(slug);
 
   await wiki.deletePage('home');
+  // With no home page the root has nothing to be a front door with, so it falls
+  // back to the listing rather than serving a blank page.
   const idxBare = await (await fetch(`${base}/`, { headers: auth })).text();
-  check('index falls back to the bare title with no home page', idxBare.includes('id="all-pages"') === false);
+  check('the root falls back to the listing with no home page', idxBare.includes('<ul class="pages">'));
 
   // --------------------------------------- public mode: visitor tokens ----
   console.log('\npublic mode: self-service tokens over MCP');
@@ -1804,7 +1848,7 @@ try {
     for (let i = 0; i < 14; i++) {
       await wiki.writePage(`scratch/tagged-${i}`, `# T${i}\n\nbody`, { title: `T${i}`, tags: [`zztag${i}`] });
     }
-    const idxHtml = await (await fetch(`${pubBase}/`)).text();
+    const idxHtml = await (await fetch(`${pubBase}/pages`)).text();
     const chipBlock = idxHtml.match(/<div class="chips">[\s\S]*?<\/div>\s*<ul class="pages">/)?.[0] || idxHtml;
     check('the tag row folds past ten', chipBlock.includes('class="chipmore"'), 'no overflow control');
     check('the overflow says how many it hides', /\+\d+ more/.test(chipBlock));
@@ -1815,10 +1859,10 @@ try {
     // A tag is not a search term. These chips used to link at /search?q=<tag>,
     // which returns pages that mention the word and misses tagged pages that
     // never say it.
-    check('a tag chip filters by tag', idxHtml.includes('href="/?tag=zztag0"'), 'chip still text-searches');
-    const tagged = await fetch(`${pubBase}/?tag=zztag7`);
+    check('a tag chip filters by tag', idxHtml.includes('href="/pages?tag=zztag0"'), 'chip still text-searches');
+    const tagged = await fetch(`${pubBase}/pages?tag=zztag7`);
     const taggedHtml = await tagged.text();
-    check('/?tag= filters the listing', tagged.status === 200 && taggedHtml.includes('scratch/tagged-7'));
+    check('/pages?tag= filters the listing', tagged.status === 200 && taggedHtml.includes('scratch/tagged-7'));
     check('and excludes everything else', !taggedHtml.includes('scratch/tagged-6'), 'filter did not filter');
     check('and says what it filtered on', /1 page tagged/.test(taggedHtml.replace(/<[^>]*>/g, '')));
     check('and offers a way out', taggedHtml.includes('clear filter'));
@@ -1826,7 +1870,7 @@ try {
     // The active tag must stay visible even when it is rare enough to live in
     // the overflow — a filter that hides itself is worse than no filter.
     check('the active tag is marked', taggedHtml.includes('aria-current="true"'));
-    const unknownTag = await (await fetch(`${pubBase}/?tag=nosuchtagexists`)).text();
+    const unknownTag = await (await fetch(`${pubBase}/pages?tag=nosuchtagexists`)).text();
     check('an empty tag does not claim the wiki is empty', !unknownTag.includes('Nothing here yet'));
     for (let i = 0; i < 14; i++) await wiki.deletePage(`scratch/tagged-${i}`);
   }
@@ -1881,14 +1925,14 @@ try {
       ['read a page', 'wiki_read', `/api/page/hosts/pve-01`, `/w/hosts/pve-01`],
       ['read as plain markdown', 'wiki_read', `/raw/hosts/pve-01`, null],
       ['list pages', 'wiki_list', '/api/pages', '/pages'],
-      ['filter by tag', 'wiki_list', '/api/pages?tag=host', '/?tag=host'],
+      ['filter by tag', 'wiki_list', '/api/pages?tag=host', '/pages?tag=host'],
       ['search text', 'wiki_search', '/api/search?q=proxmox', '/search?q=proxmox'],
       ['search by description', 'wiki_find', '/api/find?q=a+proxmox+host', '/find?q=a+proxmox+host'],
       ['check coverage', 'wiki_coverage', '/api/coverage?topic=proxmox', null],
       ['a page at random', 'wiki_random', '/api/random', '/random'],
       ['related pages', 'wiki_related', '/api/related/hosts/pve-01', null],
       ['the link graph', 'wiki_graph', '/api/graph', '/graph'],
-      ['tags', 'wiki_tags', '/api/tags', '/?tag=host'],
+      ['tags', 'wiki_tags', '/api/tags', '/pages?tag=host'],
       ['recent changes', 'wiki_changes', '/api/changes', '/changes'],
       ['stale pages', 'wiki_stale', '/api/stale', '/stale'],
       ['statistics', 'wiki_stats', '/api/stats', '/stats'],

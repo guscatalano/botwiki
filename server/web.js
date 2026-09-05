@@ -639,7 +639,7 @@ const TAG_CHIPS_SHOWN = 10;
 
 const tagChip = (t, active) => {
   const name = t.tag || t;
-  return `<a class="tag${name === active ? ' on' : ''}" href="/?tag=${encodeURIComponent(name)}"${
+  return `<a class="tag${name === active ? ' on' : ''}" href="/pages?tag=${encodeURIComponent(name)}"${
     name === active ? ' aria-current="true"' : ''
   }>${esc(name)}${t.count ? ` ${t.count}` : ''}</a>`;
 };
@@ -659,7 +659,9 @@ const tagChips = (tags, active = '') => {
       ? `<details class="chipmore"><summary class="tag">+${rest.length} more</summary>
 <div class="chips chips-rest">${rest.map((t) => tagChip(t, active)).join('')}</div></details>`
       : ''
-  }${active ? `<a class="tag clear" href="/">clear filter</a>` : ''}</div>`;
+  // Back to the unfiltered listing, not to the front page — clearing a filter
+  // means showing everything, not leaving.
+  }${active ? `<a class="tag clear" href="/pages">clear filter</a>` : ''}</div>`;
 };
 
 const REL_LABEL = {
@@ -2223,7 +2225,7 @@ here recently. An operator will read this one.</p>`
     // same one, so this is safe to make idempotent and safe to retry.
     if (p === '/api/token' && (method === 'POST' || method === 'GET')) {
       res.setHeader('cache-control', 'no-store');
-      const minted = await tokens.issue({ ip: clientIp(req) });
+      const minted = await tokens.issue({ ip: clientIp(req) });
       if (!minted.ok) {
         res.setHeader('retry-after', String(minted.retryAfter));
         return json(
@@ -2268,7 +2270,7 @@ here recently. An operator will read this one.</p>`
     }
 
     if (p === '/token' && method === 'POST') {
-      const minted = await tokens.issue({ ip: clientIp(req) });
+      const minted = await tokens.issue({ ip: clientIp(req) });
       if (minted.ok) {
         // A browser cannot attach an Authorization header to a form post, so the
         // editor would be unusable to the very people this page exists for.
@@ -2667,12 +2669,20 @@ here recently. An operator will read this one.</p>`
   }
 
   // ---- browser UI ----
-  // `/` is the front door and `/pages` is the index, and they were the same URL
-  // until someone pointed out that a nav link labelled "Pages" landing you on an
-  // essay is a broken promise. `/` still shows the home page with the listing
-  // beneath it, because a stranger arriving at the root needs the wiki to
-  // explain itself before it enumerates itself. `/pages` skips the explanation
-  // for everyone who has already read it.
+  // `/` is the front door and `/pages` is the index. They were the same URL
+  // until a nav link labelled "Pages" landing you on an essay turned out to be a
+  // broken promise, and for a while afterwards `/` was both — the home page with
+  // 150 rows stapled underneath. Now that the nav points somewhere, the root
+  // does not need to enumerate the wiki as well as explain it, and a front page
+  // whose second half is a directory listing is a front page nobody reaches the
+  // end of.
+  //
+  // Listings live at /pages. A tag filter is a listing, so `/?tag=` redirects
+  // there rather than growing a second one.
+  if (p === '/' && url.searchParams.get('tag')) {
+    const q = new URLSearchParams(url.searchParams);
+    return redirect(res, `/pages?${q}`);
+  }
   if (p === '/' || p === '/pages') {
     const indexOnly = p === '/pages';
     // Paginated: the count is a directory walk with no reads, and only the rows
@@ -2696,14 +2706,24 @@ here recently. An operator will read this one.</p>`
     // Filtering is a listing, not a front door: nobody who clicked a tag wants
     // the whole home page essay again above the four results.
     const home = indexOnly || tag || pageNo !== 1 ? null : await wiki.readPage('home');
-    const rows = home ? pages.filter((r) => r.slug !== 'home') : pages;
-    const heading = home
-      ? `<article class="prose">${renderMarkdown(home.body)}</article><hr><h2 id="all-pages">All pages</h2>`
-      : tag
-        ? `<h1>${esc(tag)}</h1>`
-        : indexOnly
-          ? `<h1>All pages</h1><p class="hint"><a href="/">${esc(SITE)}</a> — what this wiki is and how to write to it</p>`
-          : `<h1>${esc(SITE)}</h1>`;
+
+    // The front door is the home page and nothing else. The listing that used to
+    // follow it is at /pages, which the nav links to.
+    if (home) {
+      return html(
+        res,
+        layout(SITE, `<article class="prose">${renderMarkdown(home.body)}</article>`)
+      );
+    }
+
+    const rows = pages;
+    const heading = tag
+      ? `<h1>${esc(tag)}</h1>`
+      : indexOnly
+        ? `<h1>All pages</h1><p class="hint"><a href="/">${esc(SITE)}</a> — what this wiki is and how to write to it</p>`
+        // No home page written yet, so the root has nothing to be a front door
+        // with and falls back to the listing rather than serving a blank page.
+        : `<h1>${esc(SITE)}</h1>`;
 
     const href = (n) =>
       `${indexOnly ? '/pages' : '/'}?p=${n}${per === 100 ? '' : `&per=${per}`}${
