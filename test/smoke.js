@@ -385,6 +385,22 @@ for (const s of ['scratch/prov', 'scratch/prov2', 'scratch/prov3']) await wiki.d
   await wiki.deletePage('scratch/graph-bust');
   const afterDelete = await graph.buildGraph();
   check('a delete invalidates it too', !afterDelete.nodes.some((n) => n.id === 'scratch/graph-bust'));
+
+  // Stale-while-rebuilding. Building the graph is seconds of work at a real
+  // corpus size and any write invalidates it, so a blocking rebuild makes every
+  // page view during a burst of writing pay for it — measured at ~3s against
+  // ~180ms warm. relatedTo() takes the stale copy; the graph views ask for a
+  // fresh one and wait.
+  const settled = await graph.buildGraph();
+  await wiki.writePage('scratch/graph-stale', '# Stale\n\nbody', { title: 'Stale' });
+  const served = await graph.buildGraph({ allowStale: true });
+  check('a stale graph is served rather than rebuilt in the request', served === settled,
+    'the page view blocked on a rebuild');
+  const insisted = await graph.buildGraph();
+  check('but asking for fresh gets the new page', insisted.nodes.some((n) => n.id === 'scratch/graph-stale'));
+  check('and the fresh one replaces the memo', (await graph.buildGraph({ allowStale: true })) === insisted);
+  await wiki.deletePage('scratch/graph-stale');
+  await graph.buildGraph();
 }
 
 // --- backlinks come from the index, and agree with the scan ------------------
@@ -2194,6 +2210,40 @@ try {
     check('and leaks none of its text', !(await rawHidden.text()).includes('secret-marker-text'));
     await moderation.release('scratch/rawhidden');
     await wiki.deletePage('scratch/rawhidden');
+  }
+
+  // Content that arrives still URL-encoded. A client that percent-encodes its
+  // own body and then sends it as a form field gets decoded once by the
+  // transport and stored still encoded — the page renders as %23+Heading and
+  // nothing objects. Thirty-three pages went in that way before anyone noticed.
+  {
+    const encoded = '%23+Encoded+page%0A%0AThis+arrived+URL-encoded.%0A';
+    const w = await (await fetch(`${pubBase}/api/write?page=scratch/enc&title=Enc&content=${encodeURIComponent(encoded)}`, {
+      headers: { accept: 'application/json' },
+    })).json();
+    check('a double-encoded write is decoded', w.decoded === true, JSON.stringify(w).slice(0, 120));
+    check('and the caller is told', typeof w.warning === 'string');
+    const stored = await (await fetch(`${pubBase}/raw/scratch/enc`)).text();
+    check('the page stores real text', stored.startsWith('# Encoded page'), stored.slice(0, 40));
+    check('and real newlines', stored.includes('\n'));
+
+    // The guard must be narrow. A page that merely discusses percent-encoding
+    // has newlines and must be left exactly alone.
+    const about = '# On escaping\n\nA space encodes as %20 and a newline as %0A.\n';
+    await fetch(`${pubBase}/api/write?page=scratch/about-enc&title=About&content=${encodeURIComponent(about)}`);
+    const kept = await (await fetch(`${pubBase}/raw/scratch/about-enc`)).text();
+    check('a page about encoding is not mangled', kept.includes('encodes as %20') && kept.includes('%0A'), kept.slice(0, 60));
+
+    // JSON writes take the same guard, so the two surfaces cannot disagree.
+    await fetch(`${pubBase}/api/page/scratch/enc-json`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${minted.token}` },
+      body: JSON.stringify({ title: 'EncJson', content: encoded }),
+    });
+    const jsonStored = await (await fetch(`${pubBase}/raw/scratch/enc-json`)).text();
+    check('the JSON write path decodes too', jsonStored.startsWith('# Encoded page'), jsonStored.slice(0, 40));
+
+    for (const s of ['scratch/enc', 'scratch/about-enc', 'scratch/enc-json']) await wiki.deletePage(s).catch(() => {});
   }
 
   // The graph legend is one chip per namespace, overlaid on the canvas it is

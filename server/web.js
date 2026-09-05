@@ -408,6 +408,10 @@ ul.pages .k{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--
 .chips-rest{margin:8px 0 0}
 .chips .tag.on{border-color:var(--accent);color:var(--accent)}
 .chips .tag.clear{border-style:dashed;color:var(--muted)}
+.eyebrow{margin:0 0 2px;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em}
+h1.subject{margin:0 0 6px;line-height:1.15}
+h1.subject a{color:inherit;text-decoration:none}
+h1.subject a:hover{color:var(--accent)}
 table.timing{width:100%;border-collapse:collapse;margin:14px 0 26px;font-size:13px}
 table.timing th{text-align:left;font-weight:600;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;padding:0 10px 7px 0;border-bottom:1px solid var(--line)}
 table.timing td{padding:7px 10px 7px 0;border-bottom:1px solid var(--line)}
@@ -1666,7 +1670,8 @@ async function route(req, res, url) {
     }
     if (READONLY) return json(res, { error: 'read_only' }, 403);
 
-    const content = q.get('content') ?? q.get('body') ?? '';
+    const sent = q.get('content') ?? q.get('body') ?? '';
+    const { text: content, decoded: wasEncoded } = decodeIfEncoded(sent);
     if (!content) {
       return json(res, { error: 'bad_request', message: 'Nothing to write: ?content= was empty.' }, 400);
     }
@@ -1715,6 +1720,14 @@ async function route(req, res, url) {
       // its operator the opposite. A reply the caller cannot read is worse than
       // no reply: it inverts the outcome.
       const result = publicResult(issued ? { ...written, token: issued, tokenIssued: true } : written);
+      // Said out loud, so a client with the wrong encoding learns it here rather
+      // than from somebody reading the page weeks later.
+      if (wasEncoded) {
+        result.decoded = true;
+        result.warning =
+          'Your content arrived URL-encoded and was decoded once before saving. ' +
+          'Do not percent-encode the value yourself when your client already encodes the request.';
+      }
       const accept = String(req.headers.accept || '');
       if (/application\/json/i.test(accept)) return json(res, result);
 
@@ -2452,6 +2465,8 @@ here recently. An operator will read this one.</p>`
   if (p === '/api/graph') {
     return json(
       res,
+      // No allowStale here: somebody asking for the graph wants the current
+      // shape of the wiki, and a page written a second ago should be in it.
       await buildGraph({
         includeSimilar: url.searchParams.get('similar') !== '0',
         includeTags: url.searchParams.get('tags') !== '0',
@@ -2618,6 +2633,15 @@ here recently. An operator will read this one.</p>`
       const who = await writer(req, url);
       if (!who.ok) return needsToken(res, false);
       const payload = JSON.parse((await readBody(req)) || '{}');
+      // Same guard as /api/write: a caller that encoded its own content before
+      // putting it in JSON produces a page of percent-escapes, and nothing
+      // downstream has any reason to object. Normalised once, here, so both
+      // write surfaces behave the same way.
+      const putDecode = decodeIfEncoded(payload.content ?? payload.body ?? '');
+      if (putDecode.decoded) {
+        payload.content = putDecode.text;
+        delete payload.body;
+      }
       // Public instances refuse the payload rather than storing it and cleaning
       // up later, and refuse it from anyone already blocked. A private instance
       // does neither — it is the operator's own wiki.
@@ -2867,7 +2891,13 @@ ${tagChips(tags, tag)}${pageList(rows, await types.loadTypes(), await votes.scor
     }
 
     return html(res, layout(`History of ${doc.title}`,
-      `<h1>History</h1><p class="hint"><a href="/w/${esc(doc.slug)}">${esc(doc.title)}</a> · ${revs.length} revision(s)</p>` +
+      // The page is the subject; "History" is the view. It read the other way
+      // round, with the title demoted to a hint line, so on a deep slug like
+      // yard/trolla/overview the one word telling you where you are was the
+      // smallest thing on the screen.
+      `<p class="eyebrow">History of</p>
+<h1 class="subject"><a href="/w/${esc(doc.slug)}">${esc(doc.title)}</a></h1>
+<p class="hint"><code>${esc(doc.slug)}</code> · ${revs.length} revision(s)</p>` +
       (who.length
         ? `<h2>Who has edited this</h2><ul class="pages">${who.map((c) =>
             `<li><div class="t">${esc(showAgent(c.who))}<span class="str">${c.edits} edit${c.edits === 1 ? '' : 's'}</span></div>
@@ -3270,6 +3300,35 @@ ${existing ? `<a class="btn" href="/w/${esc(slug)}">Cancel</a>` : '<a class="btn
 </form>
 ${existing ? `<form method="post" action="/delete" onsubmit="return confirm('Delete ${esc(slug)}?')" style="margin-top:14px">
 <input type="hidden" name="slug" value="${esc(slug)}"><button class="btn danger" type="submit">Delete page</button></form>` : ''}`;
+}
+
+// Content that arrived still URL-encoded, decoded one more time.
+//
+// A client that percent-encodes its own body and then sends it as a form field
+// gets decoded once by the transport and stored still encoded, so the page
+// renders as `%23+Namespace+Guide%3A...` — unreadable, and silent, because
+// nothing in the write path had any reason to object. Thirty-three pages went
+// in that way before anybody noticed.
+//
+// Deliberately narrow. This fires only when the text contains an encoded
+// newline, contains no literal newline anywhere, and decoding actually produces
+// one. A page that merely discusses URL encoding has newlines and is untouched;
+// a page that is entirely one line of percent-escapes is not a page anybody
+// wrote on purpose.
+//
+// It reports itself in the response rather than fixing things quietly, because
+// a caller whose encoding is wrong should find out here and not from a reader
+// three weeks later.
+export function decodeIfEncoded(text) {
+  const s = String(text ?? '');
+  if (!s || /\n/.test(s.trim()) || !/%0A/i.test(s)) return { text: s, decoded: false };
+  try {
+    const once = decodeURIComponent(s.replace(/\+/g, ' '));
+    if (/\n/.test(once)) return { text: once, decoded: true };
+  } catch {
+    // Not valid percent-encoding after all. Leave it exactly as it came.
+  }
+  return { text: s, decoded: false };
 }
 
 // A path collapsed to the handler that served it. Timing `/w/lore/index` apart
