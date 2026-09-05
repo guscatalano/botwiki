@@ -315,6 +315,45 @@ check('a private wiki keeps the real address', onDisk3.includes('198.51.100.77')
 check('a private wiki keeps the real hostname', onDisk3.includes('someones-laptop'));
 for (const s of ['scratch/prov', 'scratch/prov2', 'scratch/prov3']) await wiki.deletePage(s);
 
+// --- every countable thing is counted at the store ---------------------------
+// search, write, vote and report were recorded in the MCP server and nowhere
+// else, so the browser and the JSON API — where nearly all the traffic is —
+// contributed nothing and four tiles read 0 forever. Counted at the layer the
+// data passes through now, so this asserts the layer rather than the callers.
+{
+  const stats = await import('../lib/stats.js');
+  const votes = await import('../lib/votes.js');
+  const { find: findPages } = await import('../lib/find.js');
+  const before = (await stats.snapshot()).totals || {};
+  const n = (k) => before[k] || 0;
+
+  await wiki.writePage('scratch/counted-1', '# Counted\n\nzzcountable body', { title: 'Counted' });
+  await wiki.search('zzcountable');
+  await findPages('a page about something countable');
+  await votes.vote('scratch/counted-1', 'up', { voter: 'test-voter' });
+  await moderation.report({ slug: 'scratch/counted-1', reason: 'spam' });
+
+  await stats.flush();
+  const after = (await stats.snapshot()).totals || {};
+  check('a write is counted without the caller saying so', (after.write || 0) > n('write'), `${n('write')} -> ${after.write}`);
+  check('a text search is counted', (after.search || 0) > n('search'), `${n('search')} -> ${after.search}`);
+  check('a described search is counted too', (after.search || 0) >= n('search') + 2, `${n('search')} -> ${after.search}`);
+  check('a vote is counted', (after.vote || 0) > n('vote'), `${n('vote')} -> ${after.vote}`);
+  check('a report is counted', (after.report || 0) > n('report'), `${n('report')} -> ${after.report}`);
+
+  // find() runs a lexical search of its own and the 404 page suggests pages by
+  // searching. Counting those would make the number measure the wiki talking to
+  // itself rather than anybody asking it anything.
+  const mid = (await stats.snapshot()).totals || {};
+  await wiki.search('zzcountable', { count: false });
+  await stats.flush();
+  const end = (await stats.snapshot()).totals || {};
+  check('an internal search is not counted', (end.search || 0) === (mid.search || 0), `${mid.search} -> ${end.search}`);
+
+  await moderation.release('scratch/counted-1').catch(() => {});
+  await wiki.deletePage('scratch/counted-1');
+}
+
 // --- a write that succeeded must not report failure --------------------------
 // Found the hard way: an unwritable history file made a PUT answer 500 on a page
 // that was already durably on disk. The caller retries a write that worked, or
@@ -403,6 +442,8 @@ await wiki.deletePage('scratch/large-but-fine');
 // question "who read what and when" is one this wiki deliberately cannot answer.
 const statStore = await import('../lib/stats.js');
 
+const snap0 = await statStore.snapshot();
+const was = (k) => snap0.totals[k] || 0;
 await wiki.writePage('scratch/counted', '# Counted\n\nBody.', { title: 'Counted' });
 statStore.record('view', { slug: 'scratch/counted' });
 statStore.record('view', { slug: 'scratch/counted' });
@@ -411,7 +452,11 @@ statStore.record('search');
 const snap1 = await statStore.snapshot();
 check('views are counted', snap1.pages['scratch/counted'].view === 2);
 check('agent reads are counted apart from browser views', snap1.pages['scratch/counted'].read === 1);
-check('totals accumulate', snap1.totals.view === 2 && snap1.totals.search === 1);
+// Asserted as a delta. It used to compare against an absolute, which held only
+// while this test was the sole thing in the process that ever counted anything —
+// and stopped the moment the store started counting writes and searches itself.
+check('totals accumulate', snap1.totals.view - was('view') === 2 && snap1.totals.search - was('search') === 1,
+  `view +${snap1.totals.view - was('view')}, search +${snap1.totals.search - was('search')}`);
 check('a day bucket is written', !!snap1.daily[new Date().toISOString().slice(0, 10)]);
 
 // Unique visitors, counted without keeping anybody. Fed 300 distinct addresses

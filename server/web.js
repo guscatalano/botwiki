@@ -3025,7 +3025,7 @@ text search</a>, or <a href="/random">open something at random</a>.</p>`)}`,
     const canSeeHidden = PUBLIC && trusted(req, url);
     const doc = await wiki.readPage(slug, { includeHidden: canSeeHidden });
     if (!doc) {
-      const near = await wiki.search(slug.replace(/[/-]/g, ' '), { limit: 5 });
+      const near = await wiki.search(slug.replace(/[/-]/g, ' '), { limit: 5, count: false });
       return html(
         res,
         layout(
