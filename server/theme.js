@@ -205,6 +205,9 @@ export function skinBoot(list, dflt) {
 export const SKIN_PICKER = skinPicker(SKINS);
 
 export function skinPicker(list) {
+  // A picker offering one choice is a button that does nothing. An instance
+  // pinned to a single skin gets no control rather than a decorative one.
+  if (list.length < 2) return '';
   return `<div class="skins" role="group" aria-label="Theme">${list
     .map((s) => `<button type="button" data-skin="${s.id}" aria-pressed="false">${s.label}</button>`)
     .join('')}</div>`;
@@ -235,41 +238,52 @@ export const SKIN_CSS = `
 .skins button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 `;
 
-// Favicons, one per skin, as data URIs. Same marks, drawn with explicit
-// colours because a favicon has no page to inherit from.
-const ICON = (accent, bg, inner) =>
-  'data:image/svg+xml,' +
-  encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="${bg}"/><g stroke="${accent}" fill="none" stroke-linecap="round">${inner}</g></svg>`
-  );
-
-export const ICONS = {
-  synth: ICON(
-    '#d9a441',
-    '#07070a',
-    `<circle cx="12" cy="12" r="9.4" stroke-width="1.6"/><polygon points="12,7.4 16,9.7 16,14.3 12,16.6 8,14.3 8,9.7" stroke-width="1.4"/><circle cx="12" cy="12" r="1.8" fill="#d9a441" stroke="none"/>`
-  ),
-  mesh: ICON(
-    '#41e08a',
-    '#050806',
-    `<path d="M9 9.5 L4.2 5.2" stroke-width="1.4"/><path d="M8.6 12 L2.4 11" stroke-width="1.4"/><path d="M9 14.5 L4.2 18.8" stroke-width="1.4"/><path d="M15 9.5 L19.8 5.2" stroke-width="1.4"/><path d="M15.4 12 L21.6 11" stroke-width="1.4"/><path d="M15 14.5 L19.8 18.8" stroke-width="1.4"/><polygon points="12,7.6 15.4,9.6 15.4,13.6 12,15.6 8.6,13.6 8.6,9.6" stroke-width="1.6"/><circle cx="12" cy="11.6" r="1.8" fill="#41e08a" stroke="none"/>`
-  ),
+// Favicons, one per skin. Same marks, drawn with explicit colours because a
+// favicon has no page to inherit from.
+//
+// One definition per skin, used for both the data URI the picker swaps in and
+// the standalone file served at /favicon.svg. The mesh icon used to exist twice
+// — once encoded, once written out again by hand — which is a duplication that
+// stays correct only until somebody edits one of them.
+const ICON_ART = {
+  synth: {
+    accent: '#d9a441',
+    bg: '#07070a',
+    inner: `<circle cx="12" cy="12" r="9.4" stroke-width="1.6"/><polygon points="12,7.4 16,9.7 16,14.3 12,16.6 8,14.3 8,9.7" stroke-width="1.4"/><circle cx="12" cy="12" r="1.8" fill="#d9a441" stroke="none"/>`,
+  },
+  mesh: {
+    accent: '#41e08a',
+    bg: '#050806',
+    inner: `<path d="M9 9.5 L4.2 5.2" stroke-width="1.4"/><path d="M8.6 12 L2.4 11" stroke-width="1.4"/><path d="M9 14.5 L4.2 18.8" stroke-width="1.4"/><path d="M15 9.5 L19.8 5.2" stroke-width="1.4"/><path d="M15.4 12 L21.6 11" stroke-width="1.4"/><path d="M15 14.5 L19.8 18.8" stroke-width="1.4"/><polygon points="12,7.6 15.4,9.6 15.4,13.6 12,15.6 8.6,13.6 8.6,9.6" stroke-width="1.6"/><circle cx="12" cy="11.6" r="1.8" fill="#41e08a" stroke="none"/>`,
+  },
+  lab: {
+    accent: '#4aa3ff',
+    bg: '#070b12',
+    inner: `<path d="M4 19.5 H20" stroke-width="1.5"/><path d="M7 19.5 V16.6" stroke-width="1.4"/><path d="M12 19.5 V15" stroke-width="1.4"/><path d="M17 19.5 V16.6" stroke-width="1.4"/><path d="M8.4 4.6 L12 12 L15.6 4.6" stroke-width="1.6"/><path d="M8.4 4.6 H15.6" stroke-width="1.5"/><circle cx="12" cy="12" r="1.8" fill="#4aa3ff" stroke="none"/>`,
+  },
 };
 
-// The same icon as a standalone file, for /favicon.ico and /favicon.svg. The
-// data-URI set above is swapped in by script once a skin is chosen; this is what
-// the browser gets from its very first request, before any script has run, and
-// what a crawler that never runs one sees. Mesh, because that is the base skin.
-export const FAVICON_SVG =
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">` +
-  `<rect width="24" height="24" rx="5" fill="#050806"/>` +
-  `<g stroke="#41e08a" fill="none" stroke-linecap="round">` +
-  `<path d="M9 9.5 L4.2 5.2" stroke-width="1.4"/><path d="M8.6 12 L2.4 11" stroke-width="1.4"/>` +
-  `<path d="M9 14.5 L4.2 18.8" stroke-width="1.4"/><path d="M15 9.5 L19.8 5.2" stroke-width="1.4"/>` +
-  `<path d="M15.4 12 L21.6 11" stroke-width="1.4"/><path d="M15 14.5 L19.8 18.8" stroke-width="1.4"/>` +
-  `<polygon points="12,7.6 15.4,9.6 15.4,13.6 12,15.6 8.6,13.6 8.6,9.6" stroke-width="1.6"/>` +
-  `<circle cx="12" cy="11.6" r="1.8" fill="#41e08a" stroke="none"/>` +
-  `</g></svg>`;
+const iconSvg = ({ accent, bg, inner }) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="${bg}"/><g stroke="${accent}" fill="none" stroke-linecap="round">${inner}</g></svg>`;
+
+export const ICONS = Object.fromEntries(
+  Object.entries(ICON_ART).map(([id, art]) => [id, 'data:image/svg+xml,' + encodeURIComponent(iconSvg(art))])
+);
+
+/**
+ * The standalone file for /favicon.svg and /favicon.ico.
+ *
+ * This is what the browser gets from its very first request, before any script
+ * has run, and what a crawler that never runs one sees — so it has to be the
+ * instance's own default skin. Serving the base skin's icon everywhere is how
+ * two wikis end up with the same tab icon no matter what the pages look like,
+ * and the tab is exactly where they get confused.
+ */
+export function faviconSvg(id) {
+  return iconSvg(ICON_ART[id] || ICON_ART.mesh);
+}
+
+export const FAVICON_SVG = faviconSvg('mesh');
 
 // Diagrams.
 //
@@ -504,15 +518,25 @@ export const MERMAID_JS = `<script>(function(){
   window.addEventListener('skinchange',function(){setTimeout(draw,0)});
 })();</script>`;
 
-export const SKIN_JS = `<script>(function(){
+export const SKIN_JS = skinJs('mesh');
+
+/**
+ * The picker's behaviour, told which skin this instance falls back to.
+ *
+ * The fallbacks used to be the literal string 'mesh', which is wrong anywhere
+ * mesh is not the default — and on an instance that does not offer mesh at all
+ * it would set a tab icon for a skin the page cannot be wearing.
+ */
+export function skinJs(dflt) {
+  return `<script>(function(){
   var el=document.documentElement,btns=[].slice.call(document.querySelectorAll('.skins button'));
-  var ICONS=${JSON.stringify(ICONS)};
+  var ICONS=${JSON.stringify(ICONS)},DEF=${JSON.stringify(dflt)};
   function icon(){
     var l=document.querySelector('link[rel="icon"]');
     if(!l){l=document.createElement('link');l.rel='icon';document.head.appendChild(l)}
-    l.href=ICONS[el.dataset.skin]||ICONS.mesh;
+    l.href=ICONS[el.dataset.skin]||ICONS[DEF];
   }
-  function mark(){var c=el.dataset.skin||'mesh';btns.forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.skin===c))})}
+  function mark(){var c=el.dataset.skin||DEF;btns.forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.skin===c))})}
   btns.forEach(function(b){b.addEventListener('click',function(){
     var v=b.dataset.skin;
     el.dataset.skin=v;
@@ -523,6 +547,7 @@ export const SKIN_JS = `<script>(function(){
   })});
   mark();icon();
 })();</script>`;
+}
 
 // --- mascots ---------------------------------------------------------------
 //

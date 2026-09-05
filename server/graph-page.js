@@ -5,9 +5,9 @@
 // The sidebar, search, detail panel and selection are shared, so switching
 // renderer never costs you your place. Both libraries are vendored, not CDN.
 
-import { TOKENS, GROUP_VARS, SKIN_CSS, SKIN_JS, MARKS, MARK_CSS } from './theme.js';
+import { TOKENS, GROUP_VARS, SKIN_CSS, MARKS, MARK_CSS } from './theme.js';
 
-export function graphPageHtml({ site = 'botwiki', skinBoot = '', skinPicker = '', defaultSkinCss = '' } = {}) {
+export function graphPageHtml({ site = 'botwiki', skinBoot = '', skinPicker = '', defaultSkinCss = '', skinRuntime = '' } = {}) {
   return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Graph · ${site}</title>
@@ -1243,5 +1243,5 @@ window.addEventListener('skinchange', () => {
   if (selectedId) syncSidebar();
   setMode(mode);
 });
-</script>${SKIN_JS}</body></html>`;
+</script>${skinRuntime}</body></html>`;
 }

@@ -1595,6 +1595,27 @@ try {
   const accentOf = (id) => (themeMod.SKIN_VARS[id].match(/--accent:(#[0-9a-f]{6})/i) || [])[1];
   const accents = ['synth', 'mesh', 'lab'].map(accentOf);
   check('the three skins do not share an accent', new Set(accents).size === 3, accents.join(' '));
+
+  // The favicon is the one part of a page a reader sees without looking at the
+  // page, and the tab is exactly where two wikis get mixed up — so the static
+  // file served before any script runs has to be the instance's own skin, not
+  // the base one.
+  for (const id of ['synth', 'mesh', 'lab']) {
+    check(`the ${id} favicon uses the ${id} accent`, themeMod.faviconSvg(id).includes(accentOf(id)),
+      themeMod.faviconSvg(id).slice(0, 90));
+    check(`the ${id} favicon is valid svg`, /^<svg[^>]*viewBox="0 0 24 24">[\s\S]*<\/svg>$/.test(themeMod.faviconSvg(id)));
+  }
+  check('an unknown skin still gets an icon', themeMod.faviconSvg('nope').includes(accentOf('mesh')));
+  // The runtime fell back to the literal 'mesh', which sets a tab icon for a
+  // skin the page cannot be wearing on an instance that does not offer it.
+  check('the picker runtime falls back to the instance default', themeMod.skinJs('lab').includes('DEF="lab"'));
+  // A picker offering one choice is a button that does nothing.
+  check('a single-skin instance gets no picker', themeMod.skinPicker(themeMod.skinsFor('lab')) === '');
+  check('a two-skin instance still gets one', themeMod.skinPicker(themeMod.skinsFor('mesh,synth')).includes('<button'));
+  // The live favicon must match what this instance actually defaults to. Uses
+  // `base`, not `pubBase` — the public server is not started until further down.
+  const favicon = await (await fetch(`${base}/favicon.svg`, { headers: auth })).text();
+  check('the served favicon matches the default skin', favicon.includes(accentOf('mesh')), favicon.slice(0, 80));
   check('a non-mesh default also claims bare :root', themeMod.defaultSkinCss('lab').startsWith(':root:not([data-skin])'));
   check('and mesh needs no such rule', themeMod.defaultSkinCss('mesh') === '');
 

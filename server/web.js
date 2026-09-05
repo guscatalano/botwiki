@@ -22,7 +22,7 @@ import * as tokens from '../lib/tokens.js';
 import * as votes from '../lib/votes.js';
 import * as stats from '../lib/stats.js';
 import { graphPageHtml } from './graph-page.js';
-import { MERMAID_JS, TOKENS, SKIN_CSS, SKIN_JS, MARKS, MARK_CSS, MASCOTS, MASCOT_CSS, PIP , FAVICON_SVG, skinsFor, skinBoot, skinPicker, defaultSkinCss } from './theme.js';
+import { MERMAID_JS, TOKENS, SKIN_CSS, MARKS, MARK_CSS, MASCOTS, MASCOT_CSS, PIP , faviconSvg, skinsFor, skinBoot, skinPicker, defaultSkinCss, skinJs } from './theme.js';
 
 const HOST = process.env.WIKI_HOST || '0.0.0.0';
 const PORT = Number(process.env.WIKI_PORT || 8787);
@@ -55,6 +55,11 @@ const DEFAULT_SKIN = INSTANCE_SKINS.some((s) => s.id === process.env.WIKI_SKIN)
 const SKIN_BOOT = skinBoot(INSTANCE_SKINS, DEFAULT_SKIN);
 const SKIN_PICKER = skinPicker(INSTANCE_SKINS);
 const DEFAULT_SKIN_CSS = defaultSkinCss(DEFAULT_SKIN);
+// The tab icon has to match too — it is the one part of the page a reader sees
+// without looking at the page, and the tab is exactly where two wikis get mixed
+// up. Served for the instance default, before any script can swap it.
+const FAVICON = faviconSvg(DEFAULT_SKIN);
+const SKIN_RUNTIME = skinJs(DEFAULT_SKIN);
 
 // Teach the store which pages are pulled from view, so every read path — the
 // twenty MCP tools, the JSON API, search, listings — inherits the check instead
@@ -649,7 +654,7 @@ ${
 <nav class="foot-links"><span>Connect</span><a href="/w/meta/mcp">MCP</a><a href="/llms.txt">llms.txt</a></nav>`
 }
 </div></footer>
-${SKIN_JS}
+${SKIN_RUNTIME}
 ${bodyHtml.includes('<pre class="mermaid">') ? MERMAID_JS : ''}
 <script>(function(){
   // The one thing <details> will not do on its own: close when you look away.
@@ -1548,10 +1553,10 @@ async function route(req, res, url) {
   if (p === '/favicon.svg' || p === '/favicon.ico') {
     res.writeHead(200, {
       'content-type': 'image/svg+xml',
-      'content-length': Buffer.byteLength(FAVICON_SVG),
+      'content-length': Buffer.byteLength(FAVICON),
       'cache-control': 'public, max-age=86400',
     });
-    return res.end(FAVICON_SVG);
+    return res.end(FAVICON);
   }
 
   if (p === '/robots.txt') {
@@ -3028,7 +3033,7 @@ so they are grouped by writer, tool and day instead. That is an approximation an
   }
 
   if (p === '/graph')
-    return html(res, graphPageHtml({ site: SITE, skinBoot: SKIN_BOOT, skinPicker: SKIN_PICKER, defaultSkinCss: DEFAULT_SKIN_CSS }));
+    return html(res, graphPageHtml({ site: SITE, skinBoot: SKIN_BOOT, skinPicker: SKIN_PICKER, defaultSkinCss: DEFAULT_SKIN_CSS, skinRuntime: SKIN_RUNTIME }));
 
   // d3 is vendored from node_modules rather than a CDN, so the graph still works
   // when the container has no route to the internet.
