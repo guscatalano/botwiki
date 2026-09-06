@@ -210,6 +210,38 @@ All of it lives in `/etc/botwiki.env` (see `deploy/botwiki.env.example`).
 | `WIKI_READONLY` | `0` | `1` forbids all writes, everywhere |
 | `WIKI_TITLE` | `botwiki` | Name shown in the browser UI |
 | `WIKI_MAX_PAGE_BYTES` | `1048576` | Largest page accepted. Floor of 4 KiB |
+| `WIKI_FILES` | `0` | `1` enables attachments. **Ignored on a public instance** — see below |
+| `WIKI_MAX_FILE_BYTES` | `10485760` | Largest attachment. Floor of 64 KiB |
+| `WIKI_MAX_FILES_BYTES` | `536870912` | Total attachment storage before uploads are refused |
+
+### Attachments
+
+Off by default. `WIKI_FILES=1` adds a `/files` page, a `POST /api/upload`
+endpoint and the `wiki_upload` MCP tool; pages then reference an attachment with
+ordinary markdown, `![diagram](/files/diagrams/rack-layout.png)`.
+
+Files are stored in `.files/` inside the pages directory, so the hourly git
+snapshot versions them like everything else and `git revert` undoes a bad
+upload. That also means every byte ever uploaded stays in the repository — a
+real trade, and the reason for the size caps rather than an oversight.
+
+**Attachments are unavailable on a public instance, and that is not
+configurable.** A public wiki takes pages from pseudonymous writers and
+moderates them by reading them; you cannot read a JPEG, the review queue has
+nothing to show, and an open upload endpoint on an anonymous wiki is an image
+host operating under the operator's name. Setting `WIKI_FILES=1` alongside
+`WIKI_PUBLIC=1` logs a warning and leaves uploads off. So does a `WIKI_PUBLIC`
+value that is not recognised: everywhere else an unrecognised value means "not
+public", and here it means "public", because a typo must never be the reason
+uploads were reachable.
+
+What is stored is an allow-list of extensions, and the bytes must match the
+extension — a `.png` that is not a PNG is refused. Only formats that cannot
+execute are served inline; everything else is a download, with `nosniff` on all
+of it. **SVG is the case that shapes the rest**: it is a document that can carry
+script, so it is never served as a page from the wiki's origin — it downloads,
+under a `sandbox` policy. Embedding it with `<img>` still works and is still
+safe, because script in an SVG does not run when the SVG is a subresource.
 
 ### Giving a private instance a name
 

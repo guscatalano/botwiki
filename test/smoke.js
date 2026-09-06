@@ -21,6 +21,8 @@ const PUB_WEB_PORT = 18790;
 // and a third that is already taken when it tries.
 const ALT_PORT = 18791;
 const BLOCKED_PORT = 18792;
+// A fourth web instance, the only one with attachments turned on.
+const FILES_PORT = 18793;
 
 let pass = 0;
 const failures = [];
@@ -1335,8 +1337,18 @@ const mcp = start('server/mcp.js', { MCP_PORT: String(MCP_PORT), MCP_TRANSPORT: 
 // A public instance, to prove the MCP write path is guarded the same way the
 // web one is. A wiki that holds strangers' edits over HTTP and publishes them
 // over MCP is not moderated; it is open with a moderated front door.
-const pubMcp = start('server/mcp.js', { MCP_PORT: String(PUB_MCP_PORT), MCP_TRANSPORT: 'http', WIKI_PUBLIC: '1', WIKI_WRITE_RATE: '200' });
-const pubWeb = start('server/web.js', { WIKI_PORT: String(PUB_WEB_PORT), WIKI_PUBLIC: '1', WIKI_TRUST_PROXY: '1', WIKI_WRITE_RATE: '200' });
+const pubMcp = start('server/mcp.js', { MCP_PORT: String(PUB_MCP_PORT), MCP_TRANSPORT: 'http', WIKI_PUBLIC: '1', WIKI_WRITE_RATE: '200', WIKI_FILES: '1' });
+// Both public instances are started WITH attachments requested, which is the
+// point: the public instance is the one that must refuse them, and a test that
+// never asks does not prove anything about the refusal.
+const pubWeb = start('server/web.js', { WIKI_PORT: String(PUB_WEB_PORT), WIKI_PUBLIC: '1', WIKI_TRUST_PROXY: '1', WIKI_WRITE_RATE: '200', WIKI_FILES: '1' });
+// The one instance where attachments are on. Its per-file cap is the floor the
+// store enforces, so the too-large path is reachable without moving megabytes.
+const filesWeb = start('server/web.js', {
+  WIKI_PORT: String(FILES_PORT),
+  WIKI_FILES: '1',
+  WIKI_MAX_FILE_BYTES: '65536',
+});
 
 const cleanup = async () => {
   // Windows will not unlink an open SQLite file, and the derived index is one —
@@ -1353,7 +1365,8 @@ const cleanup = async () => {
   mcp.kill();
   pubMcp.kill();
   pubWeb.kill();
-  await Promise.all([ended(web), ended(mcp), ended(pubMcp), ended(pubWeb)]);
+  filesWeb.kill();
+  await Promise.all([ended(web), ended(mcp), ended(pubMcp), ended(pubWeb), ended(filesWeb)]);
   await new Promise((r) => blocker.close(r));
   await fs.rm(TMP, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 };
@@ -3148,6 +3161,183 @@ try {
   await wiki.deletePage('scratch/via-mcp');
   await wiki.deletePage('scratch/via-api');
   await wiki.deletePage('scratch/no-meta');
+
+  // --------------------------------------------------------- attachments ----
+  console.log('\nattachments');
+
+  const fBase = `http://127.0.0.1:${FILES_PORT}`;
+  const fAuth = { Authorization: `Bearer ${TOKEN}` };
+  check('the files instance starts', await waitFor(`${fBase}/healthz`));
+
+  // A real 1x1 PNG. The store checks the bytes against the extension, so a
+  // placeholder string would be rejected for the right reason and prove nothing.
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  );
+  const upload = (base, name, body, headers = fAuth) =>
+    fetch(`${base}/api/upload?name=${encodeURIComponent(name)}`, { method: 'POST', headers, body });
+
+  // --- off unless asked for ---
+  check('attachments are off by default', (await fetch(`${base}/files`, { headers: auth })).status === 404);
+  check(
+    'and the upload endpoint is absent, not merely refused',
+    (await upload(base, 'x.png', PNG, auth)).status === 404
+  );
+  check(
+    'a wiki with attachments off does not advertise them in the nav',
+    !(await (await fetch(`${base}/`, { headers: auth })).text()).includes('href="/files"')
+  );
+
+  // --- never on a public instance, however it is configured ---
+  // pubWeb and pubMcp both run with WIKI_FILES=1. Every one of these has to
+  // refuse anyway. This is the invariant the whole feature is gated on.
+  check('a public instance refuses the files page even with WIKI_FILES=1', (await fetch(`${pubBase}/files`)).status === 404);
+  check('a public instance refuses uploads', (await upload(pubBase, 'x.png', PNG, {})).status === 404);
+  check('a public instance refuses the files API', (await fetch(`${pubBase}/api/files`)).status === 404);
+  check(
+    'a public instance refuses a file read',
+    (await fetch(`${pubBase}/files/anything.png`)).status === 404
+  );
+  check(
+    'a public instance never links files in its nav',
+    !(await (await fetch(`${pubBase}/`)).text()).includes('href="/files"')
+  );
+
+  // The store itself, not the routes in front of it: a public instance must
+  // refuse at the data layer too, so a future route that forgets to check
+  // cannot become the way in.
+  const pubStore = await new Promise((resolve) => {
+    const probe = spawn(
+      process.execPath,
+      [
+        '-e',
+        `process.env.WIKI_PUBLIC='1';process.env.WIKI_FILES='1';` +
+          `import('./lib/files.js').then(async(f)=>{` +
+          `let threw='no';try{await f.putFile('a.png',Buffer.from([1,2,3]))}catch(e){threw=e.code||'err'}` +
+          `console.log(JSON.stringify({enabled:f.ENABLED,threw,list:(await f.listFiles()).length}))});`,
+      ],
+      { cwd: ROOT, env: { ...process.env, WIKI_DIR: TMP }, stdio: ['ignore', 'pipe', 'ignore'] }
+    );
+    let out = '';
+    probe.stdout.on('data', (d) => (out += d));
+    probe.on('close', () => {
+      try {
+        resolve(JSON.parse(out));
+      } catch {
+        resolve({});
+      }
+    });
+  });
+  check('the store reports itself disabled when public', pubStore.enabled === false, JSON.stringify(pubStore));
+  check('the store refuses a write when public', pubStore.threw === 'files_disabled', String(pubStore.threw));
+  check('the store lists nothing when public', pubStore.list === 0, String(pubStore.list));
+
+  // A value nobody meant must not read as "not public". Everywhere else an
+  // unrecognised WIKI_PUBLIC means private; here it has to mean public, because
+  // the cost of guessing wrong is an open upload endpoint.
+  const typoPublic = await new Promise((resolve) => {
+    const probe = spawn(
+      process.execPath,
+      ['-e', `import('./lib/files.js').then((f)=>console.log(String(f.ENABLED)))`],
+      {
+        cwd: ROOT,
+        env: { ...process.env, WIKI_DIR: TMP, WIKI_PUBLIC: 'ture', WIKI_FILES: '1' },
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }
+    );
+    let out = '';
+    probe.stdout.on('data', (d) => (out += d));
+    probe.on('close', () => resolve(out.trim()));
+  });
+  check('a misspelt WIKI_PUBLIC still disables attachments', typoPublic === 'false', typoPublic);
+
+  const fileToolClient = new Client({ name: 'smoke-test-files', version: '1.0.0' });
+  await fileToolClient.connect(new StreamableHTTPClientTransport(new URL(`${pubMcpUrl}/mcp`)));
+  const pubTools = (await fileToolClient.listTools()).tools.map((t) => t.name);
+  await fileToolClient.close();
+  check('a public instance advertises no upload tool', !pubTools.includes('wiki_upload'), pubTools.join(','));
+  check('a public instance advertises no file tools at all', !pubTools.some((t) => t.includes('file')), pubTools.join(','));
+
+  // --- the enabled instance ---
+  const up = await upload(fBase, 'shots/tiny.png', PNG);
+  const upJson = await up.json();
+  check('an upload is accepted', up.status === 201, `${up.status} ${JSON.stringify(upJson)}`);
+  check('and reports the url it can be reached at', upJson.url === '/files/shots/tiny.png', upJson.url);
+  check('and hands back markdown that embeds it', upJson.markdown === '![tiny](/files/shots/tiny.png)', upJson.markdown);
+
+  const got = await fetch(`${fBase}/files/shots/tiny.png`, { headers: fAuth });
+  check('the file comes back', got.status === 200);
+  check('as the type it claims to be', got.headers.get('content-type') === 'image/png', got.headers.get('content-type'));
+  check('with sniffing off', got.headers.get('x-content-type-options') === 'nosniff');
+  check('an image is allowed to render in place', /^inline/.test(got.headers.get('content-disposition') || ''), got.headers.get('content-disposition'));
+  check('and the bytes are unchanged', Buffer.from(await got.arrayBuffer()).equals(PNG));
+
+  // --- the SVG rule ---
+  const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+  const svgUp = await upload(fBase, 'shots/diagram.svg', SVG);
+  check('an svg may be stored', svgUp.status === 201, String(svgUp.status));
+  const svgGet = await fetch(`${fBase}/files/shots/diagram.svg`, { headers: fAuth });
+  check(
+    'but an svg is never rendered as a document in this origin',
+    /^attachment/.test(svgGet.headers.get('content-disposition') || ''),
+    svgGet.headers.get('content-disposition')
+  );
+  check(
+    'and carries a sandbox even so',
+    (svgGet.headers.get('content-security-policy') || '').includes('sandbox'),
+    svgGet.headers.get('content-security-policy')
+  );
+  check('an svg-shaped file that is not svg is refused', (await upload(fBase, 'no.svg', Buffer.from('not markup'))).status === 400);
+
+  // --- what must not be stored ---
+  const badUpload = async (name, body) => (await upload(fBase, name, body)).status;
+  check('an extension nobody allowed is refused', (await badUpload('payload.exe', PNG)) === 400);
+  check('a file with no extension is refused', (await badUpload('payload', PNG)) === 400);
+  check('bytes that do not match the extension are refused', (await badUpload('lies.png', Buffer.from('hello world'))) === 400);
+  check('an empty file is refused', (await badUpload('empty.png', Buffer.alloc(0))) === 400);
+  check('a file over the cap is refused', (await badUpload('big.png', Buffer.concat([PNG, Buffer.alloc(70000)]))) === 413);
+
+  // Traversal, in the two shapes that have actually shipped as bugs elsewhere:
+  // a relative climb, and an absolute path.
+  for (const evil of ['../../escape.png', '/etc/hosts.png', '..\\..\\escape.png', 'a/../../b.png']) {
+    check(`traversal is refused: ${evil}`, (await badUpload(evil, PNG)) === 400);
+  }
+  check(
+    'and nothing escaped the attachment directory',
+    !(await fs.readdir(TMP)).some((n) => n.endsWith('.png'))
+  );
+
+  // --- the index, and orphan detection ---
+  let fIndex = await (await fetch(`${fBase}/files`, { headers: fAuth })).text();
+  check('the files page lists what is stored', fIndex.includes('shots/tiny.png'));
+  check('a file no page references is flagged unused', fIndex.includes('>unused<'));
+  check('the upload script is loaded only where it is needed', fIndex.includes('/assets/files-'));
+  check(
+    'and not on an ordinary page',
+    !(await (await fetch(`${fBase}/w/hosts/pve-01`, { headers: fAuth })).text()).includes('/assets/files-')
+  );
+
+  await wiki.writePage('scratch/with-image', 'Here it is:\n\n![tiny](/files/shots/tiny.png)\n', {
+    title: 'With an image',
+  });
+  fIndex = await (await fetch(`${fBase}/files`, { headers: fAuth })).text();
+  check('a referenced file names the page using it', fIndex.includes('/w/scratch/with-image'));
+
+  const imgPage = await (await fetch(`${fBase}/w/scratch/with-image`, { headers: fAuth })).text();
+  check(
+    'a page embeds a stored image as an image',
+    imgPage.includes('<img src="/files/shots/tiny.png"'),
+    imgPage.slice(imgPage.indexOf('Here it is'), imgPage.indexOf('Here it is') + 160)
+  );
+
+  // --- removal ---
+  const fDel = await fetch(`${fBase}/api/files/delete?name=shots/diagram.svg`, { method: 'POST', headers: fAuth });
+  check('a file can be deleted', (await fDel.json()).deleted === true);
+  check('and is gone afterwards', (await fetch(`${fBase}/files/shots/diagram.svg`, { headers: fAuth })).status === 404);
+  check('deleting what is not there is not an error', (await (await fetch(`${fBase}/api/files/delete?name=shots/diagram.svg`, { method: 'POST', headers: fAuth })).json()).deleted === false);
+
+  await wiki.deletePage('scratch/with-image');
 
   // ----------------------------------------------------- mcp over stdio ----
   console.log('\nmcp over stdio');

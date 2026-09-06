@@ -22,6 +22,7 @@ import * as moderation from '../lib/moderation.js';
 import * as tokens from '../lib/tokens.js';
 import * as votes from '../lib/votes.js';
 import * as stats from '../lib/stats.js';
+import * as files from '../lib/files.js';
 import { graphPageHtml } from './graph-page.js';
 import { MERMAID_JS, TOKENS, SKIN_CSS, MARKS, MARK_CSS, MASCOTS, MASCOT_CSS, PIP , faviconSvg, skinsFor, skinBoot, skinPicker, defaultSkinCss, skinJs } from './theme.js';
 
@@ -46,6 +47,17 @@ const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.WIKI_TRUST_PROXY || '');
 // should not pay for it. Everything guarded by this flag is absent — not hidden,
 // absent — from a private instance: no report link, no policy page, no routes.
 const PUBLIC = /^(1|true|yes)$/i.test(process.env.WIKI_PUBLIC || '');
+
+// Whether this instance serves attachments at all.
+//
+// `!PUBLIC` is redundant with files.ENABLED, which already refuses on a public
+// instance for reasons set out in lib/files.js, and it stays anyway. Two
+// independent conditions, computed from different variables in different
+// modules, is the difference between "we believe uploads are off here" and
+// "uploads are off here unless both of these are wrong at once". This one is
+// cheap; the failure it guards against is an open upload endpoint on an
+// anonymous wiki.
+const FILES_ON = files.ENABLED && !PUBLIC;
 // How many nodes the graph ships unless asked otherwise. Enough to show the
 // shape — hubs, clusters, the namespaces that talk to each other — without
 // handing a browser a corpus-sized force simulation. The viewer raises it.
@@ -621,6 +633,18 @@ footer code{font-family:ui-monospace,Menlo,monospace}
 .str{float:right;display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
 .bar{display:inline-block;width:54px;height:5px;border-radius:99px;background:var(--line);overflow:hidden}
 .bar i{display:block;height:100%;background:var(--accent);border-radius:99px}
+.ubox{display:flex;flex-wrap:wrap;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 15px;margin:14px 0}
+.ubox label{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted)}
+.ftable{width:100%;border-collapse:collapse;margin-top:16px}
+.ftable th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border-bottom:1px solid var(--line);padding:6px 10px}
+.ftable td{border-bottom:1px solid var(--line);padding:9px 10px;vertical-align:middle;font-size:13px}
+.ftable code{font-size:11.5px;color:var(--muted)}
+.fsize{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--muted)}
+.fprev{width:64px}
+.fprev img{width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--line);display:block}
+.fext{display:inline-block;min-width:44px;text-align:center;padding:5px 7px;border:1px solid var(--line);border-radius:6px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.orphan{color:var(--warn)}
+.finline{display:inline}
 ${SKIN_CSS}
 ${MARK_CSS}
 ${MASCOT_CSS}
@@ -661,6 +685,36 @@ const MENU_JS = `(function(){
   document.addEventListener('keydown',function(e){ if(e.key==='Escape') m.open=false; });
 })();`;
 
+// An upload has to be sent as raw bytes, because the server does not parse
+// multipart — a from-scratch multipart parser is a lot of subtle code to accept
+// a format nothing here needs. So the form is intercepted and the File object is
+// sent as the body, which is one line of fetch and no parsing at all.
+const FILES_JS = `(function(){
+  var f=document.getElementById('upload'); if(!f) return;
+  var file=f.querySelector('input[type=file]');
+  var named=f.querySelector('input[name=name]');
+  var out=f.querySelector('.uout');
+  // Offer the file's own name, so the common case needs no typing, but leave it
+  // editable — the name is a wiki path, not the name it had on someone's disk.
+  file.addEventListener('change',function(){
+    if(!named.value && file.files[0]) named.value=file.files[0].name.toLowerCase();
+  });
+  f.addEventListener('submit',function(e){
+    e.preventDefault();
+    var chosen=file.files&&file.files[0];
+    if(!chosen){ out.textContent='Choose a file first.'; return; }
+    var name=(named.value||chosen.name).trim();
+    out.textContent='Uploading '+name+'…';
+    fetch('/api/upload?name='+encodeURIComponent(name),{method:'POST',body:chosen})
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok,j:j}; }); })
+      .then(function(r){
+        if(!r.ok){ out.textContent=r.j.message||r.j.error||'Upload failed'; return; }
+        location.reload();
+      })
+      .catch(function(err){ out.textContent=String(err); });
+  });
+})();`;
+
 const ASSET_JS_BODY = `${unwrapScript(SKIN_RUNTIME)}\n${MENU_JS}`;
 const ASSET_MERMAID_BODY = unwrapScript(MERMAID_JS);
 
@@ -673,11 +727,13 @@ function asset(name, type, body) {
 const ASSET_CSS_URL = asset('app', 'text/css', CSS);
 const ASSET_JS_URL = asset('app', 'text/javascript', ASSET_JS_BODY);
 const ASSET_MERMAID_URL = asset('diagrams', 'text/javascript', ASSET_MERMAID_BODY);
+const ASSET_FILES_URL = asset('files', 'text/javascript', FILES_JS);
 
 // `defer` rather than `async`: these read the DOM they are attached to, and the
 // skin runtime marks the picker, which has to exist by then.
 const ASSET_JS_TAG = `<script src="${ASSET_JS_URL}" defer></script>`;
 const ASSET_MERMAID_TAG = `<script src="${ASSET_MERMAID_URL}" defer></script>`;
+const ASSET_FILES_TAG = `<script src="${ASSET_FILES_URL}" defer></script>`;
 
 // The diagram script is emitted only for pages that actually have a diagram.
 // It used to ship on every page and guard itself at runtime, which was fine
@@ -696,7 +752,7 @@ ${rawSlug ? `<link rel="alternate" type="text/markdown" href="/raw/${esc(rawSlug
 <form class="search" action="/search"><input name="q" value="${esc(q)}" placeholder="Search the wiki…" autocomplete="off"></form>
 <nav class="nav"><a href="/pages" title="every page, newest first">All pages</a><a href="/graph">Graph</a><a href="/random" title="a page at random">Random</a>
 <details class="menu"><summary>Activity</summary>
-<div class="menupanel"><a href="/changes">Changes</a><a href="/sessions">Sessions</a><a href="/review">Review</a><a href="/stale">Needs checking</a><a href="/top">Rated</a><a href="/stats">Statistics</a><a href="/tokens">Tokens</a></div></details>
+<div class="menupanel"><a href="/changes">Changes</a><a href="/sessions">Sessions</a><a href="/review">Review</a><a href="/stale">Needs checking</a><a href="/top">Rated</a>${FILES_ON ? '<a href="/files">Files</a>' : ''}<a href="/stats">Statistics</a><a href="/tokens">Tokens</a></div></details>
 ${READONLY ? '' : '<a class="navnew" href="/new">+ New</a>'}</nav>
 ${SKIN_PICKER}
 </div></header><main><div class="wrap">${bodyHtml}</div></main>
@@ -712,6 +768,7 @@ ${
 </div></footer>
 ${ASSET_JS_TAG}
 ${bodyHtml.includes('<pre class="mermaid">') ? ASSET_MERMAID_TAG : ''}
+${bodyHtml.includes('id="upload"') ? ASSET_FILES_TAG : ''}
 </body></html>`;
 }
 
@@ -1506,19 +1563,37 @@ const redirect = (res, to, status = 302) => {
 };
 
 function readBody(req, limit = 8 * 1024 * 1024) {
+  return readBodyBuffer(req, limit).then((b) => b.toString('utf8'));
+}
+
+// The same read, without the decode. An upload is bytes: decoding it as UTF-8
+// and re-encoding replaces every byte that is not valid UTF-8 with U+FFFD, which
+// corrupts the file rather than failing, and does it silently.
+function readBodyBuffer(req, limit = 8 * 1024 * 1024, { destroyOnOverflow = true } = {}) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (c) => {
       size += c.length;
       if (size > limit) {
-        reject(new Error('body too large'));
-        req.destroy();
+        const err = new Error('body too large');
+        err.tooLarge = true;
+        // Stop reading either way — an oversized body must not keep growing in
+        // memory just because we have decided to refuse it.
+        //
+        // Whether to destroy is the caller's, and the distinction is not
+        // cosmetic: destroying the request tears down the socket, so a handler
+        // that then writes a 413 writes it into a closed connection and the
+        // client sees a network error instead of the reason. A caller that
+        // wants to explain itself asks for the socket to stay up until it has.
+        req.pause();
+        if (destroyOnOverflow) req.destroy();
+        reject(err);
         return;
       }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
@@ -1572,6 +1647,103 @@ function checkAuth(req, res, url) {
   return false;
 }
 
+// --- attachments -----------------------------------------------------------
+
+const sizeText = (n) =>
+  n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
+
+/**
+ * Which pages point at which attachment.
+ *
+ * A full read of every page body, deliberately. The alternative is a third
+ * index table and another schema version, maintained on every write, to answer
+ * a question asked only by this one page — and an index that can disagree with
+ * the files on disk is worse than no index, because "orphan" would then be a
+ * claim rather than an observation. Page bodies are small and already cached.
+ */
+async function fileUsage() {
+  const used = new Map();
+  for (const p of await wiki.listPages()) {
+    let doc;
+    try {
+      doc = await wiki.readPage(p.slug);
+    } catch {
+      continue;
+    }
+    for (const ref of files.fileRefs(doc?.body)) {
+      if (!used.has(ref)) used.set(ref, []);
+      used.get(ref).push(p.slug);
+    }
+  }
+  return used;
+}
+
+async function filesIndex(res, _url) {
+  const list = await files.listFiles();
+  const used = await fileUsage();
+  const total = list.reduce((n, f) => n + f.size, 0);
+
+  const row = (f) => {
+    const where = used.get(f.name) || [];
+    // A preview only for what may render in place. An SVG is deliberately not
+    // previewed from a thumbnail here even though <img> would be safe, because
+    // the row's job is to say what this file is, and "an image we will not
+    // render as a page" is the honest answer for it.
+    const preview = f.inline
+      ? `<a href="${esc(f.url)}"><img src="${esc(f.url)}" alt="" loading="lazy"></a>`
+      : `<span class="fext">${esc(f.ext)}</span>`;
+    const md = f.inline ? `![${f.name.replace(/\.[^.]+$/, '').split('/').pop()}](${f.url})` : `[${f.name}](${f.url})`;
+    return `<tr>
+<td class="fprev">${preview}</td>
+<td><a href="${esc(f.url)}">${esc(f.name)}</a><div class="hint"><code>${esc(md)}</code></div></td>
+<td class="fsize">${sizeText(f.size)}</td>
+<td>${
+      where.length
+        ? where.map((s) => `<a href="/w/${esc(s)}">${esc(s)}</a>`).join(', ')
+        : '<span class="orphan" title="no page points at this file">unused</span>'
+    }</td>
+<td>${
+      READONLY
+        ? ''
+        : `<form method="post" action="/files/delete" class="finline"><input type="hidden" name="name" value="${esc(
+            f.name
+          )}"><button type="submit">Delete</button></form>`
+    }</td>
+</tr>`;
+  };
+
+  const table = list.length
+    ? `<table class="ftable"><thead><tr><th></th><th>File</th><th>Size</th><th>Used by</th><th></th></tr></thead>
+<tbody>${list.map(row).join('')}</tbody></table>`
+    : `<p class="hint">Nothing uploaded yet.</p>`;
+
+  const form = READONLY
+    ? ''
+    : `<form id="upload" class="ubox">
+<label>File <input type="file" required></label>
+<label>Name <input name="name" placeholder="diagrams/rack-layout.png" size="32"></label>
+<button type="submit">Upload</button>
+<span class="uout hint"></span>
+</form>`;
+
+  return html(
+    res,
+    layout(
+      'Files',
+      `<h1>Files</h1>
+<p class="hint">${list.length} file${list.length === 1 ? '' : 's'}, ${sizeText(total)} of ${sizeText(
+        files.MAX_TOTAL_BYTES
+      )} · up to ${sizeText(files.MAX_FILE_BYTES)} each · ${esc(files.EXTENSIONS.join(' '))}</p>
+${form}
+<p class="hint">Reference one from a page with the markdown in each row. Agents can
+<code>POST /api/upload?name=&lt;name&gt;</code> with the bytes as the body, or use the
+<code>wiki_upload</code> tool. Files are stored beside the pages, so the hourly git
+snapshot versions them and <code>git revert</code> undoes a bad upload.</p>
+${table}`
+    )
+  );
+}
+
 // --- routes ----------------------------------------------------------------
 
 async function route(req, res, url) {
@@ -1591,9 +1763,6 @@ async function route(req, res, url) {
     });
     return res.end(a.body);
   }
-  if (!p.startsWith('/api/') && !p.startsWith('/vendor/')) {
-  }
-
   if (p === '/healthz') {
     return json(res, {
       ok: true,
@@ -1653,6 +1822,92 @@ async function route(req, res, url) {
   }
 
   if (!checkAuth(req, res, url)) return;
+
+  // ---- attachments ----------------------------------------------------
+  //
+  // Placed after checkAuth deliberately: a file is wiki content and is read by
+  // whoever may read the wiki. Everything here 404s when the feature is off, so
+  // an instance without attachments does not merely refuse them, it does not
+  // appear to have them.
+  if (p === '/files' || p.startsWith('/files/')) {
+    if (!FILES_ON) return send(res, 404, 'text/plain; charset=utf-8', 'attachments are not enabled\n');
+
+    if (p === '/files' && method === 'GET') return filesIndex(res, url);
+    if (p === '/files/delete' && method === 'POST') {
+      if (READONLY) return json(res, { error: 'read_only' }, 403);
+      const body = new URLSearchParams((await readBody(req)) || '');
+      await files.deleteFile(body.get('name') || '');
+      return redirect(res, '/files');
+    }
+
+    const name = p.slice('/files/'.length);
+    const f = await files.readFile(name);
+    if (!f) return send(res, 404, 'text/plain; charset=utf-8', 'no such file\n');
+
+    // The one rule that matters: only a format that cannot execute is allowed
+    // to render in this origin. Everything else is a download.
+    //
+    // `nosniff` is what makes the content-type binding rather than advisory —
+    // without it a browser may decide a .txt full of markup is HTML and run it.
+    // `sandbox` is the second lock on SVG: even if a future edit made it inline,
+    // or a proxy dropped the disposition, the document lands with no script, no
+    // same-origin identity and no ability to act as the reader.
+    const headers = {
+      'content-type': f.mime,
+      'content-length': f.data.length,
+      'x-content-type-options': 'nosniff',
+      'cache-control': 'private, max-age=300',
+      'content-disposition': f.inline
+        ? `inline; filename="${path.basename(f.name)}"`
+        : `attachment; filename="${path.basename(f.name)}"`,
+    };
+    if (f.sandbox) headers['content-security-policy'] = 'sandbox';
+    res.writeHead(200, headers);
+    return res.end(method === 'HEAD' ? undefined : f.data);
+  }
+
+  if (p === '/api/files' && method === 'GET') {
+    if (!FILES_ON) return json(res, { error: 'files_disabled', enabled: false }, 404);
+    return json(res, { enabled: true, ...(await files.usage()), files: await files.listFiles() });
+  }
+
+  if (p === '/api/upload' && (method === 'POST' || method === 'PUT')) {
+    if (!FILES_ON) return json(res, { error: 'files_disabled', enabled: false }, 404);
+    if (READONLY) return json(res, { error: 'read_only' }, 403);
+    const name = url.searchParams.get('name') || url.searchParams.get('file') || '';
+    if (!name) {
+      return json(res, { error: 'bad_request', message: 'Pass ?name=<file.png> and the bytes as the body.' }, 400);
+    }
+    // Refused before a byte is read when the client says how big it is, which
+    // every real upload does. Reading 40 MB in order to announce that we will
+    // not accept 40 MB is work done on behalf of the mistake.
+    const declared = Number(req.headers['content-length'] || 0);
+    if (declared > files.MAX_FILE_BYTES) {
+      return json(res, { error: 'too_large', limit: files.MAX_FILE_BYTES, size: declared }, 413);
+    }
+    let buf;
+    try {
+      buf = await readBodyBuffer(req, files.MAX_FILE_BYTES, { destroyOnOverflow: false });
+    } catch (err) {
+      if (!err?.tooLarge) throw err;
+      // A chunked body that lied, or declared nothing. Answer first, then hang
+      // up: the connection cannot be reused after a body we stopped reading.
+      json(res, { error: 'too_large', limit: files.MAX_FILE_BYTES }, 413);
+      return req.destroy();
+    }
+    const saved = await files.putFile(name, buf, {
+      agent: url.searchParams.get('agent') || ua(req) || 'http client',
+    });
+    return json(res, saved, saved.replaced ? 200 : 201);
+  }
+
+  if (p === '/api/files/delete' && (method === 'POST' || method === 'DELETE')) {
+    if (!FILES_ON) return json(res, { error: 'files_disabled', enabled: false }, 404);
+    if (READONLY) return json(res, { error: 'read_only' }, 403);
+    const body = new URLSearchParams((await readBody(req)) || '');
+    const name = url.searchParams.get('name') || body.get('name') || '';
+    return json(res, await files.deleteFile(name));
+  }
 
   // ---- JSON API (for agents that speak HTTP instead of MCP) ----
   // Rebuild the derived index from disk. Needed only when pages changed without
