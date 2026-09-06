@@ -203,12 +203,33 @@ All of it lives in `/etc/botwiki.env` (see `deploy/botwiki.env.example`).
 | --- | --- | --- |
 | `WIKI_DIR` | `./pages` | Directory of markdown files — **this is the data** |
 | `WIKI_HOST` / `WIKI_PORT` | `0.0.0.0` / `8787` | Web UI + JSON API |
+| `WIKI_EXTRA_PORTS` | *(empty)* | More ports the same UI answers on, e.g. `80`. See below |
 | `MCP_HOST` / `MCP_PORT` | `0.0.0.0` / `8788` | MCP over HTTP |
 | `MCP_TRANSPORT` | `stdio` | `http` to serve MCP over the network |
 | `WIKI_TOKEN` | *(empty)* | Private: the bearer token, empty means no auth. Public: the **operator** token |
 | `WIKI_READONLY` | `0` | `1` forbids all writes, everywhere |
 | `WIKI_TITLE` | `botwiki` | Name shown in the browser UI |
 | `WIKI_MAX_PAGE_BYTES` | `1048576` | Largest page accepted. Floor of 4 KiB |
+
+### Giving a private instance a name
+
+A wiki you reach by typing an address and a port number does not really have a
+name, and people paste the address into notes instead of the name. Two halves:
+
+1. A record on whatever resolves your network — an unbound host override, a
+   dnsmasq entry, a DHCP reservation. Setting the hostname *on the machine* is
+   not this: it tells that machine its own name, and nothing else asks it.
+2. `WIKI_EXTRA_PORTS=80`, so the name alone is enough. `WIKI_PORT` keeps
+   answering, so nothing already pointing at `:8787` breaks.
+
+Port 80 is privileged and the service runs as an unprivileged user, so also
+install `deploy/botwiki-web-lowport.conf` as a drop-in — it grants
+`CAP_NET_BIND_SERVICE` and nothing else, and is deliberately not part of the
+shipped unit, because a public instance behind Caddy never needs it. Without it
+the extra listener logs an `EACCES` and is skipped; the wiki still starts.
+
+A public instance wants Caddy in front instead (see `deploy/Caddyfile.example`),
+which terminates TLS on 443 and proxies to 8787.
 
 Public instances only:
 
