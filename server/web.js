@@ -27,6 +27,15 @@ import { MERMAID_JS, TOKENS, SKIN_CSS, MARKS, MARK_CSS, MASCOTS, MASCOT_CSS, PIP
 
 const HOST = process.env.WIKI_HOST || '0.0.0.0';
 const PORT = Number(process.env.WIKI_PORT || 8787);
+// Extra ports the same UI answers on. A LAN instance sets WIKI_EXTRA_PORTS=80
+// so that a hostname on its own reaches the wiki, without invalidating every
+// link, bookmark and note that already says :8787 — the point of a hostname is
+// to stop people typing an address, not to make the old address wrong.
+// Binding anything below 1024 needs CAP_NET_BIND_SERVICE; see deploy/README.
+const EXTRA_PORTS = (process.env.WIKI_EXTRA_PORTS || '')
+  .split(',')
+  .map((s) => Number(s.trim()))
+  .filter((n) => Number.isInteger(n) && n > 0 && n < 65536 && n !== PORT);
 const TOKEN = process.env.WIKI_TOKEN || '';
 const READONLY = /^(1|true|yes)$/i.test(process.env.WIKI_READONLY || '');
 const SITE = process.env.WIKI_TITLE || 'botwiki';
@@ -3462,7 +3471,7 @@ function routeClass(pathname, method) {
   return `${m}${p === '/' ? '/' : p.replace(/\/+$/, '')}`;
 }
 
-const server = http.createServer(async (req, res) => {
+const handler = async (req, res) => {
   // The scheme has to come from the proxy, not from the socket: this process
   // only ever speaks plain HTTP to Caddy, so building absolute URLs from the
   // connection would advertise http:// endpoints for a site served over TLS —
@@ -3492,17 +3501,38 @@ const server = http.createServer(async (req, res) => {
       }
     }
   }
+};
+
+// One handler, one port per listener. A single http.Server cannot listen twice,
+// so an extra port is an extra server over the same closure — they share every
+// module-level cache and counter, because they are the same program.
+const servers = [PORT, ...EXTRA_PORTS].map((port) => {
+  const s = http.createServer(handler);
+  s.on('error', (err) => {
+    if (port === PORT) throw err;
+    // An extra port is a convenience. Losing it should not take the wiki down
+    // with it — the one case this really happens is port 80 without
+    // CAP_NET_BIND_SERVICE, and a wiki that refuses to start is a worse
+    // outcome than a wiki you have to reach on its real port.
+    console.error(`[web] extra port ${port} unavailable: ${err.code || err.message}`);
+  });
+  s.listen(port, HOST);
+  return s;
 });
 
-server.listen(PORT, HOST, () => {
+servers[0].once('listening', () => {
   console.log(
     `botwiki web on http://${HOST}:${PORT}\n` +
+      (EXTRA_PORTS.length ? `  also:  ${EXTRA_PORTS.map((p) => `:${p}`).join(' ')}\n` : '') +
       `  pages: ${wiki.PAGES_DIR}\n` +
       `  auth:  ${TOKEN ? 'token required' : 'NONE (set WIKI_TOKEN before exposing this)'}\n` +
       `  mode:  ${READONLY ? 'read-only' : 'read-write'}`
   );
 });
 
-const shutdown = () => server.close(() => process.exit(0));
+const shutdown = () => {
+  let left = servers.length;
+  for (const s of servers) s.close(() => --left || process.exit(0));
+};
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

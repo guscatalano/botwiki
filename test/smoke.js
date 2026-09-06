@@ -3,6 +3,7 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +17,10 @@ const WEB_PORT = 18787;
 const MCP_PORT = 18788;
 const PUB_MCP_PORT = 18789;
 const PUB_WEB_PORT = 18790;
+// A second port the same web instance answers on, the way a LAN box adds 80,
+// and a third that is already taken when it tries.
+const ALT_PORT = 18791;
+const BLOCKED_PORT = 18792;
 
 let pass = 0;
 const failures = [];
@@ -1316,7 +1321,16 @@ async function waitFor(url, tries = 60) {
   return false;
 }
 
-const web = start('server/web.js', { WIKI_PORT: String(WEB_PORT) });
+// Hold a port so the server is guaranteed to fail binding one of the extras.
+// Losing an extra port must not take the wiki down with it, and the only way
+// to know that is to make it happen.
+const blocker = http.createServer((_, res) => res.end());
+await new Promise((r) => blocker.listen(BLOCKED_PORT, '127.0.0.1', r));
+
+const web = start('server/web.js', {
+  WIKI_PORT: String(WEB_PORT),
+  WIKI_EXTRA_PORTS: ` ${ALT_PORT}, ${BLOCKED_PORT} ,${WEB_PORT}, nonsense`,
+});
 const mcp = start('server/mcp.js', { MCP_PORT: String(MCP_PORT), MCP_TRANSPORT: 'http' });
 // A public instance, to prove the MCP write path is guarded the same way the
 // web one is. A wiki that holds strangers' edits over HTTP and publishes them
@@ -1340,6 +1354,7 @@ const cleanup = async () => {
   pubMcp.kill();
   pubWeb.kill();
   await Promise.all([ended(web), ended(mcp), ended(pubMcp), ended(pubWeb)]);
+  await new Promise((r) => blocker.close(r));
   await fs.rm(TMP, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 };
 
@@ -1348,6 +1363,17 @@ try {
   const mcpUrl = `http://127.0.0.1:${MCP_PORT}`;
   check('web server starts', await waitFor(`${base}/healthz`));
   check('mcp server starts', await waitFor(`${mcpUrl}/healthz`));
+
+  // A hostname is only worth having if it reaches the wiki without a port, so
+  // the same instance has to answer on more than one. All four cases at once:
+  // an extra port serves, a duplicate of the main port is ignored, an
+  // unbindable one is survived, and junk in the list is not fatal.
+  check('an extra port serves the same wiki', await waitFor(`http://127.0.0.1:${ALT_PORT}/healthz`));
+  const altPage = await (await fetch(`http://127.0.0.1:${ALT_PORT}/w/hosts/pve-01`, { headers: { Authorization: `Bearer ${TOKEN}` } })).text();
+  check('an extra port serves real pages, not a redirect', altPage.includes('Updated body'), altPage.slice(0, 120));
+  check('a taken extra port does not stop the server', (await fetch(`${base}/healthz`)).ok);
+  const blocked = await (await fetch(`http://127.0.0.1:${BLOCKED_PORT}/`)).text();
+  check('the taken port still belongs to whoever had it', blocked === '', JSON.stringify(blocked.slice(0, 60)));
 
   const auth = { Authorization: `Bearer ${TOKEN}` };
 
