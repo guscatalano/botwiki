@@ -3331,6 +3331,75 @@ try {
     imgPage.slice(imgPage.indexOf('Here it is'), imgPage.indexOf('Here it is') + 160)
   );
 
+  // --- video: the player, and the two headers that make it one ---
+  //
+  // A minimal but real MP4 container: the signature check reads bytes 4-8, and
+  // range serving only cares about length, so this exercises both without
+  // carrying a video into the repository.
+  const MP4 = Buffer.concat([
+    Buffer.from([0, 0, 0, 0x18]),
+    Buffer.from('ftypisom'),
+    Buffer.alloc(2048, 0x41),
+  ]);
+  const vid = await upload(fBase, 'clips/demo.mp4', MP4);
+  const vidJson = await vid.json();
+  check('a video is accepted', vid.status === 201, `${vid.status} ${JSON.stringify(vidJson)}`);
+  check('and is recognised as video', vidJson.kind === 'video', vidJson.kind);
+  check('a file claiming to be mp4 that is not is refused', (await badUpload('clips/fake.mp4', Buffer.from('nope'))) === 400);
+
+  const vHead = await fetch(`${fBase}/files/clips/demo.mp4`, { headers: fAuth });
+  check('a video is served as video', vHead.headers.get('content-type') === 'video/mp4', vHead.headers.get('content-type'));
+  check('a video renders in place rather than downloading', /^inline/.test(vHead.headers.get('content-disposition') || ''));
+  // Without this header a media element will not seek at all: the scrub bar is
+  // decorative and the whole file downloads before the first frame.
+  check('and says ranges are allowed', vHead.headers.get('accept-ranges') === 'bytes', vHead.headers.get('accept-ranges'));
+  await vHead.arrayBuffer();
+
+  const partial = await fetch(`${fBase}/files/clips/demo.mp4`, { headers: { ...fAuth, Range: 'bytes=100-199' } });
+  check('a range request is answered with a range', partial.status === 206, String(partial.status));
+  check(
+    'and says which range, of what total',
+    partial.headers.get('content-range') === `bytes 100-199/${MP4.length}`,
+    partial.headers.get('content-range')
+  );
+  const partialBytes = Buffer.from(await partial.arrayBuffer());
+  check('and returns exactly those bytes', partialBytes.length === 100 && partialBytes.equals(MP4.subarray(100, 200)));
+
+  const openEnded = await fetch(`${fBase}/files/clips/demo.mp4`, { headers: { ...fAuth, Range: 'bytes=2000-' } });
+  check('an open-ended range runs to the end', openEnded.status === 206 && Number(openEnded.headers.get('content-length')) === MP4.length - 2000, openEnded.headers.get('content-length'));
+  await openEnded.arrayBuffer();
+
+  // "bytes=-500" is the LAST 500 bytes, not the first. Getting this backwards
+  // serves plausible-looking wrong data instead of failing.
+  const suffix = await fetch(`${fBase}/files/clips/demo.mp4`, { headers: { ...fAuth, Range: 'bytes=-64' } });
+  const suffixBytes = Buffer.from(await suffix.arrayBuffer());
+  check('a suffix range means the end of the file', suffixBytes.equals(MP4.subarray(MP4.length - 64)), String(suffixBytes.length));
+
+  const past = await fetch(`${fBase}/files/clips/demo.mp4`, { headers: { ...fAuth, Range: `bytes=${MP4.length + 10}-` } });
+  check('a range past the end is refused, not silently widened', past.status === 416, String(past.status));
+  check('and reports the real size', past.headers.get('content-range') === `bytes */${MP4.length}`, past.headers.get('content-range'));
+  await past.arrayBuffer();
+
+  const noRange = await fetch(`${fBase}/files/clips/demo.mp4`, { headers: fAuth });
+  check('a request with no range still gets the whole file', noRange.status === 200 && Number(noRange.headers.get('content-length')) === MP4.length);
+  await noRange.arrayBuffer();
+
+  await wiki.writePage('scratch/with-video', 'Watch:\n\n![demo](/files/clips/demo.mp4)\n', { title: 'With a video' });
+  const vidPage = await (await fetch(`${fBase}/w/scratch/with-video`, { headers: fAuth })).text();
+  check('a page embeds a stored video as a player', vidPage.includes('<video src="/files/clips/demo.mp4" controls'), '');
+  check('and not as a broken image', !vidPage.includes('<img src="/files/clips/demo.mp4"'));
+  await wiki.deletePage('scratch/with-video');
+
+  // A remote media URL is left as a link on purpose: a <video> pointing at
+  // someone else's server streams from them on every page load.
+  await wiki.writePage('scratch/remote-video', 'Elsewhere:\n\n![x](https://example.com/a.mp4)\n', { title: 'Remote' });
+  const remotePage = await (await fetch(`${fBase}/w/scratch/remote-video`, { headers: fAuth })).text();
+  check('a remote video is not turned into a player', !remotePage.includes('<video src="https://example.com/a.mp4"'));
+  await wiki.deletePage('scratch/remote-video');
+
+  const vDel = await fetch(`${fBase}/api/files/delete?name=clips/demo.mp4`, { method: 'POST', headers: fAuth });
+  check('the video can be removed', (await vDel.json()).deleted === true);
+
   // --- removal ---
   const fDel = await fetch(`${fBase}/api/files/delete?name=shots/diagram.svg`, { method: 'POST', headers: fAuth });
   check('a file can be deleted', (await fDel.json()).deleted === true);

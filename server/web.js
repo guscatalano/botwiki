@@ -329,6 +329,27 @@ marked.use({
       if (PUBLIC) {
         return `<a href="${esc(href)}" rel="noopener nofollow ugc">${esc(token.text || href)}</a>`;
       }
+
+      // Markdown has one embed syntax and it is spelled like an image, so
+      // ![clip](/files/clip.mp4) is how anyone would try to put a video on a
+      // page. Rendering that as <img> produces a broken image icon for a file
+      // that is present and fine, so the element follows the file rather than
+      // the syntax.
+      //
+      // Only for attachments this wiki serves. A remote media URL stays a link:
+      // an <img> that 404s is a small embarrassment, whereas a <video> pointed
+      // at someone else's server streams from them on every page load, and the
+      // page author may not have realised they were asking for that.
+      if (href.startsWith('/files/')) {
+        const kind = files.kindOf((href.split('.').pop() || '').toLowerCase());
+        if (kind === 'video' || kind === 'audio') {
+          // preload="metadata" so the page can show duration and a scrub bar
+          // without pulling the whole file for a video nobody plays.
+          return `<${kind} src="${esc(href)}" controls preload="metadata"${
+            kind === 'video' ? ' playsinline' : ''
+          }>${esc(token.text || '')}</${kind}>`;
+        }
+      }
       return `<img src="${esc(href)}" alt="${esc(token.text || '')}"${
         token.title ? ` title="${esc(token.title)}"` : ''
       }>`;
@@ -441,6 +462,8 @@ h3{font-size:16px;margin:26px 0 8px}
 .prose table{border-collapse:collapse;width:100%;display:block;overflow-x:auto}
 .prose th,.prose td{border:1px solid var(--line);padding:7px 11px;text-align:left}
 .prose img{max-width:100%}
+.prose video{max-width:100%;height:auto;border-radius:8px;border:1px solid var(--line);background:#000;display:block;margin:14px 0}
+.prose audio{width:100%;max-width:520px;display:block;margin:14px 0}
 ul.pages{list-style:none;padding:0;margin:0;display:grid;gap:2px}
 ul.pages li{padding:13px 16px;border:1px solid var(--line);border-radius:10px;background:var(--panel);margin-bottom:8px}
 ul.pages .t{font-weight:600;display:flex;align-items:center;gap:8px}
@@ -641,7 +664,7 @@ footer code{font-family:ui-monospace,Menlo,monospace}
 .ftable code{font-size:11.5px;color:var(--muted)}
 .fsize{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--muted)}
 .fprev{width:64px}
-.fprev img{width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--line);display:block}
+.fprev img,.fprev .fvid{width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--line);display:block;background:#000}
 .fext{display:inline-block;min-width:44px;text-align:center;padding:5px 7px;border:1px solid var(--line);border-radius:6px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
 .orphan{color:var(--warn)}
 .finline{display:inline}
@@ -1689,9 +1712,14 @@ async function filesIndex(res, _url) {
     // previewed from a thumbnail here even though <img> would be safe, because
     // the row's job is to say what this file is, and "an image we will not
     // render as a page" is the honest answer for it.
-    const preview = f.inline
-      ? `<a href="${esc(f.url)}"><img src="${esc(f.url)}" alt="" loading="lazy"></a>`
-      : `<span class="fext">${esc(f.ext)}</span>`;
+    const preview =
+      f.kind === 'image' && f.inline
+        ? `<a href="${esc(f.url)}"><img src="${esc(f.url)}" alt="" loading="lazy"></a>`
+        : f.kind === 'video'
+          ? // metadata only: a directory of thumbnails should not pull frames
+            // from every video on the wiki just to draw the page.
+            `<video src="${esc(f.url)}" muted preload="metadata" class="fvid"></video>`
+          : `<span class="fext">${esc(f.ext)}</span>`;
     const md = f.inline ? `![${f.name.replace(/\.[^.]+$/, '').split('/').pop()}](${f.url})` : `[${f.name}](${f.url})`;
     return `<tr>
 <td class="fprev">${preview}</td>
@@ -1841,8 +1869,17 @@ async function route(req, res, url) {
     }
 
     const name = p.slice('/files/'.length);
-    const f = await files.readFile(name);
-    if (!f) return send(res, 404, 'text/plain; charset=utf-8', 'no such file\n');
+    const meta = await files.statFile(name);
+    if (!meta) return send(res, 404, 'text/plain; charset=utf-8', 'no such file\n');
+
+    const range = files.parseRange(req.headers.range, meta.size);
+    if (range?.unsatisfiable) {
+      // 416 and the real size, so a player that asked for the wrong thing can
+      // ask again correctly. Answering the whole file instead would have it
+      // decode the start of the file as though it were the middle.
+      res.writeHead(416, { 'content-range': `bytes */${meta.size}`, 'accept-ranges': 'bytes' });
+      return res.end();
+    }
 
     // The one rule that matters: only a format that cannot execute is allowed
     // to render in this origin. Everything else is a download.
@@ -1852,18 +1889,39 @@ async function route(req, res, url) {
     // `sandbox` is the second lock on SVG: even if a future edit made it inline,
     // or a proxy dropped the disposition, the document lands with no script, no
     // same-origin identity and no ability to act as the reader.
+    //
+    // `accept-ranges` is what tells a media element it may seek at all. Without
+    // it the scrub bar is decorative and the whole file downloads before the
+    // first frame, which looks like a slow wiki rather than a missing header.
     const headers = {
-      'content-type': f.mime,
-      'content-length': f.data.length,
+      'content-type': meta.mime,
       'x-content-type-options': 'nosniff',
+      'accept-ranges': 'bytes',
       'cache-control': 'private, max-age=300',
-      'content-disposition': f.inline
-        ? `inline; filename="${path.basename(f.name)}"`
-        : `attachment; filename="${path.basename(f.name)}"`,
+      'content-disposition': meta.inline
+        ? `inline; filename="${path.basename(meta.name)}"`
+        : `attachment; filename="${path.basename(meta.name)}"`,
     };
-    if (f.sandbox) headers['content-security-policy'] = 'sandbox';
-    res.writeHead(200, headers);
-    return res.end(method === 'HEAD' ? undefined : f.data);
+    if (meta.sandbox) headers['content-security-policy'] = 'sandbox';
+
+    if (method === 'HEAD') {
+      res.writeHead(200, { ...headers, 'content-length': meta.size });
+      return res.end();
+    }
+
+    const f = await files.openFile(name, range || {});
+    if (!f) return send(res, 404, 'text/plain; charset=utf-8', 'no such file\n');
+    headers['content-length'] = f.length;
+    if (range) headers['content-range'] = `bytes ${f.start}-${f.end}/${meta.size}`;
+    res.writeHead(range ? 206 : 200, headers);
+
+    // A viewer who closes the tab mid-video aborts the response. Without this
+    // the read stream keeps going, holding a file descriptor per abandoned
+    // playback — which on a wiki nobody is watching is invisible, and on one
+    // somebody is, is a descriptor leak that looks like the disk.
+    res.on('close', () => f.stream.destroy());
+    f.stream.on('error', () => res.destroy());
+    return f.stream.pipe(res);
   }
 
   if (p === '/api/files' && method === 'GET') {
@@ -1885,20 +1943,24 @@ async function route(req, res, url) {
     if (declared > files.MAX_FILE_BYTES) {
       return json(res, { error: 'too_large', limit: files.MAX_FILE_BYTES, size: declared }, 413);
     }
-    let buf;
+    // Streamed to disk rather than buffered. The whole point of supporting
+    // video is files too big to want a copy of in this process's memory, and a
+    // body that arrives faster than the disk takes it is exactly when holding
+    // the difference in RAM stops being free.
     try {
-      buf = await readBodyBuffer(req, files.MAX_FILE_BYTES, { destroyOnOverflow: false });
+      const saved = await files.putStream(name, req, {
+        agent: url.searchParams.get('agent') || ua(req) || 'http client',
+      });
+      return json(res, saved, saved.replaced ? 200 : 201);
     } catch (err) {
-      if (!err?.tooLarge) throw err;
-      // A chunked body that lied, or declared nothing. Answer first, then hang
-      // up: the connection cannot be reused after a body we stopped reading.
-      json(res, { error: 'too_large', limit: files.MAX_FILE_BYTES }, 413);
-      return req.destroy();
+      if (err?.code === 'too_large') {
+        // Answer first, then hang up: the connection cannot be reused after a
+        // body we stopped reading part-way through.
+        json(res, { error: 'too_large', limit: files.MAX_FILE_BYTES }, 413);
+        return req.destroy();
+      }
+      throw err;
     }
-    const saved = await files.putFile(name, buf, {
-      agent: url.searchParams.get('agent') || ua(req) || 'http client',
-    });
-    return json(res, saved, saved.replaced ? 200 : 201);
   }
 
   if (p === '/api/files/delete' && (method === 'POST' || method === 'DELETE')) {
