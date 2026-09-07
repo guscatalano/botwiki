@@ -213,6 +213,7 @@ All of it lives in `/etc/botwiki.env` (see `deploy/botwiki.env.example`).
 | `WIKI_FILES` | `0` | `1` enables attachments. **Ignored on a public instance** — see below |
 | `WIKI_MAX_FILE_BYTES` | `10485760` | Largest attachment. Floor of 64 KiB |
 | `WIKI_MAX_FILES_BYTES` | `536870912` | Total attachment storage before uploads are refused |
+| `WIKI_MIN_FREE_BYTES` | `536870912` | Disk to keep free. An upload that would eat into it is refused |
 
 ### Attachments
 
@@ -220,10 +221,23 @@ Off by default. `WIKI_FILES=1` adds a `/files` page, a `POST /api/upload`
 endpoint and the `wiki_upload` MCP tool; pages then reference an attachment with
 ordinary markdown, `![diagram](/files/diagrams/rack-layout.png)`.
 
-Files are stored in `.files/` inside the pages directory, so the hourly git
-snapshot versions them like everything else and `git revert` undoes a bad
-upload. That also means every byte ever uploaded stays in the repository — a
-real trade, and the reason for the size caps rather than an oversight.
+Files are stored in `.files/` inside the pages directory, and that directory
+carries a `.gitignore` so they are **not versioned**. Binaries in a repo a timer
+commits hourly cost their size twice — once in the working tree, once in the
+object store — and every superseded copy stays forever; ten short videos took
+one instance from 3 MB to 73 MB in an hour. Use git-lfs or an object store if
+you need their history.
+
+The consequence is stated rather than hidden: **deleting an attachment is
+permanent.** `git revert` undoes a bad page edit and cannot undo a bad upload.
+
+Two limits apply, plus a floor. `WIKI_MAX_FILE_BYTES` bounds one file and is
+enforced while the upload is still streaming. `WIKI_MAX_FILES_BYTES` bounds the
+total. `WIKI_MIN_FREE_BYTES` is separate from both and is about the disk rather
+than the policy: an upload is refused if it would leave less than that free,
+because the derived SQLite index shares the volume and a write that runs out of
+space part-way can corrupt it. A refused upload is an error message; a corrupt
+index is an outage.
 
 **Attachments are unavailable on a public instance, and that is not
 configurable.** A public wiki takes pages from pseudonymous writers and

@@ -3331,6 +3331,21 @@ try {
     imgPage.slice(imgPage.indexOf('Here it is'), imgPage.indexOf('Here it is') + 160)
   );
 
+  // --- attachments are not versioned ---
+  //
+  // The pages directory is a git repo a timer commits hourly. Binaries in it
+  // cost their size twice and keep every superseded copy forever, so the store
+  // excludes itself rather than relying on whoever set the instance up.
+  const ignorePath = path.join(TMP, '.files', '.gitignore');
+  const ignore = await fs.readFile(ignorePath, 'utf8').catch(() => '');
+  check('the attachment directory excludes itself from git', ignore.includes('\n*\n'), JSON.stringify(ignore.slice(0, 60)));
+  check('and keeps the exclusion itself tracked', ignore.includes('!.gitignore'));
+  // Asked of the running instance, not of an import: this test process has
+  // attachments off, so a local listFiles() would return [] and the check would
+  // pass without ever looking at anything.
+  const apiFiles = await (await fetch(`${fBase}/api/files`, { headers: fAuth })).json();
+  check('the exclusion is not itself served as an attachment', !apiFiles.files.some((f) => f.name.includes("gitignore")), JSON.stringify(apiFiles.files.map((f) => f.name)));
+
   // --- video: the player, and the two headers that make it one ---
   //
   // A minimal but real MP4 container: the signature check reads bytes 4-8, and

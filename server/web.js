@@ -1950,6 +1950,7 @@ async function route(req, res, url) {
     try {
       const saved = await files.putStream(name, req, {
         agent: url.searchParams.get('agent') || ua(req) || 'http client',
+        expect: declared,
       });
       return json(res, saved, saved.replaced ? 200 : 201);
     } catch (err) {
