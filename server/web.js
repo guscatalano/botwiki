@@ -23,6 +23,7 @@ import * as tokens from '../lib/tokens.js';
 import * as votes from '../lib/votes.js';
 import * as stats from '../lib/stats.js';
 import * as files from '../lib/files.js';
+import * as live from '../lib/live.js';
 import { graphPageHtml } from './graph-page.js';
 import { MERMAID_JS, TOKENS, SKIN_CSS, MARKS, MARK_CSS, MASCOTS, MASCOT_CSS, PIP , faviconSvg, skinsFor, skinBoot, skinPicker, defaultSkinCss, skinJs } from './theme.js';
 
@@ -668,6 +669,18 @@ footer code{font-family:ui-monospace,Menlo,monospace}
 .fext{display:inline-block;min-width:44px;text-align:center;padding:5px 7px;border:1px solid var(--line);border-radius:6px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
 .orphan{color:var(--warn)}
 .finline{display:inline}
+.dot{display:inline-block;width:9px;height:9px;border-radius:99px;background:var(--line);vertical-align:middle;margin-left:6px}
+.dot.on{background:#4ade80}
+.dot.off{background:var(--warn)}
+.feed{list-style:none;padding:0;margin:16px 0;font-size:13px}
+.feed .ev{display:grid;grid-template-columns:74px 62px minmax(0,1fr) minmax(0,1.1fr);gap:10px;align-items:baseline;padding:6px 8px;border-bottom:1px solid var(--line)}
+.feed time{color:var(--muted);font-variant-numeric:tabular-nums;font-size:11.5px}
+.feed .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.feed .s,.feed .d{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.feed .dim{color:var(--muted)}
+.feed .ev-write .k,.feed .ev-upload .k{color:var(--accent)}
+.feed .ev-delete .k{color:var(--warn)}
+@media (max-width:640px){.feed .ev{grid-template-columns:62px 56px minmax(0,1fr)}.feed .d{display:none}}
 ${SKIN_CSS}
 ${MARK_CSS}
 ${MASCOT_CSS}
@@ -738,6 +751,41 @@ const FILES_JS = `(function(){
   });
 })();`;
 
+const LIVE_JS = `(function(){
+  var feed=document.getElementById('feed'); if(!feed) return;
+  var dot=document.getElementById('livedot');
+  var last=0, count=0;
+  function esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':String(s); return d.innerHTML; }
+  function detail(ev){
+    var d=ev.detail||{};
+    if(ev.kind==='search') return d.redacted?'<span class="dim">query withheld</span>':esc(d.query||'')+(d.tag?' <span class="dim">tag:</span> '+esc(d.tag):'');
+    if(ev.kind==='write') return d.created?'created':(d.verified?'updated, verified':'updated');
+    if(ev.kind==='upload') return esc(d.mime||'')+(d.size?' <span class="dim">'+Math.round(d.size/1024)+' KB</span>':'');
+    return d.client?'<span class="dim">'+esc(d.client)+'</span>':'';
+  }
+  function add(ev){
+    // Ids only ever increase, so the replayed backlog and the live stream can
+    // overlap without showing anything twice.
+    if(ev.id<=last) return; last=ev.id;
+    var li=document.createElement('li');
+    li.className='ev ev-'+ev.kind;
+    var t=new Date(ev.ts);
+    var slug=ev.slug?'<a href="/w/'+encodeURI(ev.slug)+'">'+esc(ev.slug)+'</a>':'<span class="dim">&mdash;</span>';
+    li.innerHTML='<time>'+esc(t.toLocaleTimeString())+'</time>'+
+      '<span class="k">'+esc(ev.kind)+'</span>'+
+      '<span class="s">'+slug+'</span>'+
+      '<span class="d">'+detail(ev)+'</span>';
+    feed.insertBefore(li, feed.firstChild);
+    // The page is a window, not a log. Without this a tab left open overnight
+    // holds every event since it was opened.
+    if(++count>200){ feed.removeChild(feed.lastChild); count--; }
+  }
+  var src=new EventSource('/api/live');
+  src.onmessage=function(e){ try{ add(JSON.parse(e.data)); }catch(_){} };
+  src.onopen=function(){ if(dot){ dot.className='dot on'; dot.title='connected'; } };
+  src.onerror=function(){ if(dot){ dot.className='dot off'; dot.title='reconnecting'; } };
+})();`;
+
 const ASSET_JS_BODY = `${unwrapScript(SKIN_RUNTIME)}\n${MENU_JS}`;
 const ASSET_MERMAID_BODY = unwrapScript(MERMAID_JS);
 
@@ -751,12 +799,14 @@ const ASSET_CSS_URL = asset('app', 'text/css', CSS);
 const ASSET_JS_URL = asset('app', 'text/javascript', ASSET_JS_BODY);
 const ASSET_MERMAID_URL = asset('diagrams', 'text/javascript', ASSET_MERMAID_BODY);
 const ASSET_FILES_URL = asset('files', 'text/javascript', FILES_JS);
+const ASSET_LIVE_URL = asset('live', 'text/javascript', LIVE_JS);
 
 // `defer` rather than `async`: these read the DOM they are attached to, and the
 // skin runtime marks the picker, which has to exist by then.
 const ASSET_JS_TAG = `<script src="${ASSET_JS_URL}" defer></script>`;
 const ASSET_MERMAID_TAG = `<script src="${ASSET_MERMAID_URL}" defer></script>`;
 const ASSET_FILES_TAG = `<script src="${ASSET_FILES_URL}" defer></script>`;
+const ASSET_LIVE_TAG = `<script src="${ASSET_LIVE_URL}" defer></script>`;
 
 // The diagram script is emitted only for pages that actually have a diagram.
 // It used to ship on every page and guard itself at runtime, which was fine
@@ -775,7 +825,7 @@ ${rawSlug ? `<link rel="alternate" type="text/markdown" href="/raw/${esc(rawSlug
 <form class="search" action="/search"><input name="q" value="${esc(q)}" placeholder="Search the wiki…" autocomplete="off"></form>
 <nav class="nav"><a href="/pages" title="every page, newest first">All pages</a><a href="/graph">Graph</a><a href="/random" title="a page at random">Random</a>
 <details class="menu"><summary>Activity</summary>
-<div class="menupanel"><a href="/changes">Changes</a><a href="/sessions">Sessions</a><a href="/review">Review</a><a href="/stale">Needs checking</a><a href="/top">Rated</a>${FILES_ON ? '<a href="/files">Files</a>' : ''}<a href="/stats">Statistics</a><a href="/tokens">Tokens</a></div></details>
+<div class="menupanel"><a href="/live">Live</a><a href="/changes">Changes</a><a href="/sessions">Sessions</a><a href="/review">Review</a><a href="/stale">Needs checking</a><a href="/top">Rated</a>${FILES_ON ? '<a href="/files">Files</a>' : ''}<a href="/stats">Statistics</a><a href="/tokens">Tokens</a></div></details>
 ${READONLY ? '' : '<a class="navnew" href="/new">+ New</a>'}</nav>
 ${SKIN_PICKER}
 </div></header><main><div class="wrap">${bodyHtml}</div></main>
@@ -792,6 +842,7 @@ ${
 ${ASSET_JS_TAG}
 ${bodyHtml.includes('<pre class="mermaid">') ? ASSET_MERMAID_TAG : ''}
 ${bodyHtml.includes('id="upload"') ? ASSET_FILES_TAG : ''}
+${bodyHtml.includes('id="feed"') ? ASSET_LIVE_TAG : ''}
 </body></html>`;
 }
 
@@ -1670,6 +1721,98 @@ function checkAuth(req, res, url) {
   return false;
 }
 
+// --- the live feed ---------------------------------------------------------
+//
+// One poller for the whole server, not one per viewer. The database work is
+// then constant no matter how many people are watching, which is the property
+// that makes leaving the page open all day reasonable.
+const liveClients = new Set();
+let livePoller = null;
+let liveCursor = 0;
+let liveLastWrite = 0;
+
+function livePump() {
+  if (livePoller) return;
+  liveCursor = live.head();
+  liveLastWrite = Date.now();
+  livePoller = setInterval(() => {
+    let rows = [];
+    try {
+      rows = live.since(liveCursor, 200);
+    } catch {
+      rows = [];
+    }
+    if (rows.length) {
+      liveCursor = rows[rows.length - 1].id;
+      const payload = rows.map((r) => `data: ${JSON.stringify(r)}\n\n`).join('');
+      for (const res of liveClients) res.write(payload);
+      liveLastWrite = Date.now();
+      return;
+    }
+    // A comment line every 20 quiet seconds. Without it an idle SSE connection
+    // is indistinguishable from a dead one to anything in the middle, and a
+    // proxy will eventually close it — which shows up as a feed that silently
+    // stops on a quiet wiki and works fine on a busy one.
+    if (Date.now() - liveLastWrite > 20000) {
+      for (const res of liveClients) res.write(': keep-alive\n\n');
+      liveLastWrite = Date.now();
+    }
+  }, 1000);
+  // Never hold the process open for a feed nobody is reading.
+  livePoller.unref?.();
+}
+
+function liveSubscribe(req, res) {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache, no-transform',
+    connection: 'keep-alive',
+    // Tells a buffering proxy to stop buffering. Without it the events arrive
+    // in batches whenever the buffer happens to flush, which is the difference
+    // between a live feed and a slideshow.
+    'x-accel-buffering': 'no',
+  });
+  // Ask the browser to wait a second before reconnecting rather than hammering.
+  res.write('retry: 2000\n\n');
+
+  // The tail, so someone arriving at a quiet moment sees the wiki is alive
+  // rather than an empty page. Ids only increase, so the client drops anything
+  // the shared poller then repeats.
+  for (const ev of live.since(0, 40)) res.write(`data: ${JSON.stringify(ev)}\n\n`);
+
+  liveClients.add(res);
+  livePump();
+
+  const drop = () => {
+    liveClients.delete(res);
+    if (!liveClients.size && livePoller) {
+      clearInterval(livePoller);
+      livePoller = null;
+    }
+  };
+  res.on('close', drop);
+  res.on('error', drop);
+}
+
+function livePage(res) {
+  return html(
+    res,
+    layout(
+      'Live',
+      `<h1>Live <span id="livedot" class="dot"></span></h1>
+<p class="hint">What is happening to this wiki, as it happens — reads, writes, searches,
+uploads and votes, from the browser and from agents over MCP alike. Both servers
+write to one log, so this is the whole picture and not just the half that came
+through this process.${
+        PUBLIC ? ' Search terms are withheld here: this wiki does not publish what its readers looked for.' : ''
+      }</p>
+<ul id="feed" class="feed"></ul>
+<p class="hint">Nothing yet means nothing has happened since you opened this. Open a page in
+another tab and it will appear.</p>`
+    )
+  );
+}
+
 // --- attachments -----------------------------------------------------------
 
 const sizeText = (n) =>
@@ -1850,6 +1993,9 @@ async function route(req, res, url) {
   }
 
   if (!checkAuth(req, res, url)) return;
+
+  if (p === '/live' && method === 'GET') return livePage(res);
+  if (p === '/api/live' && method === 'GET') return liveSubscribe(req, res);
 
   // ---- attachments ----------------------------------------------------
   //
@@ -3803,6 +3949,10 @@ const handler = async (req, res) => {
   // which is the mistake this file has now made three times with counters.
   const began = process.hrtime.bigint();
   res.once('finish', () => {
+    // A live feed is held open on purpose, so its "response time" is how long
+    // someone watched — minutes or hours. Timing it would put that in the same
+    // histogram as page loads and make every percentile meaningless.
+    if (url.pathname === '/api/live') return;
     stats.timed(routeClass(url.pathname, req.method), Number(process.hrtime.bigint() - began) / 1e6);
   });
   try {

@@ -1355,6 +1355,7 @@ const cleanup = async () => {
   // held by this process and by both servers. Close ours, then wait for theirs to
   // actually exit rather than merely being signalled.
   wiki.closeIndex();
+  (await import('../lib/live.js')).close();
   const ended = (child) =>
     new Promise((resolve) => {
       if (child.exitCode !== null || child.signalCode !== null) return resolve();
@@ -3330,6 +3331,99 @@ try {
     imgPage.includes('<img src="/files/shots/tiny.png"'),
     imgPage.slice(imgPage.indexOf('Here it is'), imgPage.indexOf('Here it is') + 160)
   );
+
+  // --------------------------------------------------------- live feed ----
+  console.log('\nlive feed');
+
+  // Read the stream with a raw request rather than fetch: an SSE response never
+  // ends, so awaiting its body would hang the suite forever.
+  const readStream = (base, ms = 2500) =>
+    new Promise((resolve) => {
+      const u = new URL(`${base}/api/live`);
+      const req = http.request(
+        { hostname: u.hostname, port: u.port, path: u.pathname, headers: { Authorization: `Bearer ${TOKEN}` } },
+        (res) => {
+          let buf = '';
+          res.on('data', (c) => (buf += c));
+          setTimeout(() => {
+            req.destroy();
+            resolve({ status: res.statusCode, type: res.headers['content-type'] || '', body: buf });
+          }, ms).unref?.();
+        }
+      );
+      req.on('error', () => resolve({ status: 0, type: '', body: '' }));
+      req.end();
+    });
+
+  // Write through the store in THIS process while watching the feed served by
+  // the web server process. That is the whole claim: the wiki is two processes
+  // and an in-memory emitter would show a viewer only its own half.
+  const streamed = readStream(base);
+  await new Promise((r) => setTimeout(r, 400));
+  await wiki.writePage('scratch/live-probe', 'watched\n', { title: 'Live probe' });
+  await wiki.search('live-probe-query-marker');
+  const feed = await streamed;
+
+  check('the live endpoint is a stream', feed.status === 200 && feed.type.includes('text/event-stream'), `${feed.status} ${feed.type}`);
+  check('it tells the client how long to wait before reconnecting', feed.body.includes('retry:'), feed.body.slice(0, 40));
+
+  const events = feed.body
+    .split('\n')
+    .filter((l) => l.startsWith('data: '))
+    .map((l) => {
+      try {
+        return JSON.parse(l.slice(6));
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+
+  check('events arrive as parseable json', events.length > 0, String(events.length));
+  check(
+    'a write in another process reaches the feed',
+    events.some((e) => e.kind === 'write' && e.slug === 'scratch/live-probe'),
+    events.map((e) => `${e.kind}:${e.slug || ''}`).join(' ')
+  );
+  check(
+    'and says whether the page was created or updated',
+    events.some((e) => e.kind === 'write' && e.detail?.created === true)
+  );
+  check(
+    'a search in another process reaches the feed',
+    events.some((e) => e.kind === 'search' && e.detail?.query === 'live-probe-query-marker'),
+    events.filter((e) => e.kind === 'search').map((e) => JSON.stringify(e.detail)).join(' ')
+  );
+  check('every event carries an increasing id', events.every((e, i) => i === 0 || e.id > events[i - 1].id));
+
+  // A public instance must not publish what its readers searched for.
+  const pubFeed = await readStream(pubBase, 1500);
+  const pubEvents = pubFeed.body
+    .split('\n')
+    .filter((l) => l.startsWith('data: '))
+    .map((l) => {
+      try {
+        return JSON.parse(l.slice(6));
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  check(
+    'a public instance withholds search terms',
+    pubEvents.filter((e) => e.kind === 'search').every((e) => e.detail?.redacted === true && !e.detail?.query),
+    JSON.stringify(pubEvents.filter((e) => e.kind === 'search').map((e) => e.detail))
+  );
+
+  check('the live page loads', (await fetch(`${base}/live`, { headers: auth })).status === 200);
+  const livePageHtml = await (await fetch(`${base}/live`, { headers: auth })).text();
+  check('and pulls in the feed script only there', livePageHtml.includes('/assets/live-'));
+  check(
+    'which an ordinary page does not',
+    !(await (await fetch(`${base}/w/hosts/pve-01`, { headers: auth })).text()).includes('/assets/live-')
+  );
+
+  await wiki.deletePage('scratch/live-probe');
 
   // --- attachments are not versioned ---
   //
