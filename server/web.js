@@ -823,9 +823,9 @@ ${rawSlug ? `<link rel="alternate" type="text/markdown" href="/raw/${esc(rawSlug
 <body><header class="top"><div class="wrap">
 <a class="brand" href="/">${MARKS}<span class="bn">${esc(SITE)}</span></a>
 <form class="search" action="/search"><input name="q" value="${esc(q)}" placeholder="Search the wiki…" autocomplete="off"></form>
-<nav class="nav"><a href="/pages" title="every page, newest first">All pages</a><a href="/graph">Graph</a><a href="/random" title="a page at random">Random</a>
+<nav class="nav"><a href="/pages" title="every page, newest first">All pages</a><a href="/graph">Graph</a><a href="/live" title="what is happening right now">Live</a><a href="/random" title="a page at random">Random</a>
 <details class="menu"><summary>Activity</summary>
-<div class="menupanel"><a href="/live">Live</a><a href="/changes">Changes</a><a href="/sessions">Sessions</a><a href="/review">Review</a><a href="/stale">Needs checking</a><a href="/top">Rated</a>${FILES_ON ? '<a href="/files">Files</a>' : ''}<a href="/stats">Statistics</a><a href="/tokens">Tokens</a></div></details>
+<div class="menupanel"><a href="/changes">Changes</a><a href="/sessions">Sessions</a><a href="/review">Review</a><a href="/stale">Needs checking</a><a href="/top">Rated</a>${FILES_ON ? '<a href="/files">Files</a>' : ''}<a href="/stats">Statistics</a><a href="/tokens">Tokens</a></div></details>
 ${READONLY ? '' : '<a class="navnew" href="/new">+ New</a>'}</nav>
 ${SKIN_PICKER}
 </div></header><main><div class="wrap">${bodyHtml}</div></main>
@@ -1735,15 +1735,23 @@ function livePump() {
   if (livePoller) return;
   liveCursor = live.head();
   liveLastWrite = Date.now();
-  livePoller = setInterval(() => {
+  let inFlight = false;
+  livePoller = setInterval(async () => {
+    // A tick that overlaps the previous one would read the same cursor twice
+    // and send everything between them to every viewer, twice.
+    if (inFlight) return;
+    inFlight = true;
     let rows = [];
     try {
-      rows = live.since(liveCursor, 200);
+      const got = await live.feed(liveCursor, 200);
+      rows = got.rows;
+      liveCursor = got.cursor;
     } catch {
       rows = [];
+    } finally {
+      inFlight = false;
     }
     if (rows.length) {
-      liveCursor = rows[rows.length - 1].id;
       const payload = rows.map((r) => `data: ${JSON.stringify(r)}\n\n`).join('');
       for (const res of liveClients) res.write(payload);
       liveLastWrite = Date.now();
@@ -1762,7 +1770,7 @@ function livePump() {
   livePoller.unref?.();
 }
 
-function liveSubscribe(req, res) {
+async function liveSubscribe(req, res) {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache, no-transform',
@@ -1778,7 +1786,7 @@ function liveSubscribe(req, res) {
   // The tail, so someone arriving at a quiet moment sees the wiki is alive
   // rather than an empty page. Ids only increase, so the client drops anything
   // the shared poller then repeats.
-  for (const ev of live.since(0, 40)) res.write(`data: ${JSON.stringify(ev)}\n\n`);
+  for (const ev of (await live.feed(0, 40)).rows) res.write(`data: ${JSON.stringify(ev)}\n\n`);
 
   liveClients.add(res);
   livePump();

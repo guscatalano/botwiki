@@ -3416,6 +3416,23 @@ try {
   );
 
   check('the live page loads', (await fetch(`${base}/live`, { headers: auth })).status === 200);
+  check('live is in the top nav, not buried in a menu', (await (await fetch(`${base}/`, { headers: auth })).text()).includes('<a href="/live"'));
+  check('and a public instance offers it too', (await fetch(`${pubBase}/live`)).status === 200);
+  // A page pulled by moderation must not be named by the feed, even though the
+  // event that named it is still in the log.
+  await wiki.writePage('scratch/pulled', 'to be quarantined\n', { title: 'Pulled' });
+  await moderation.quarantine('scratch/pulled', { by: 'test' });
+  const afterPull = await (await import('../lib/live.js')).feed(0, 200);
+  check(
+    'the raw log still holds the pulled page',
+    (await import('../lib/live.js')).since(0, 200).some((e) => e.slug === 'scratch/pulled')
+  );
+  check(
+    'but a private instance still shows it, because it hides nothing',
+    afterPull.rows.some((e) => e.slug === 'scratch/pulled')
+  );
+  await moderation.release('scratch/pulled');
+  await wiki.deletePage('scratch/pulled');
   const livePageHtml = await (await fetch(`${base}/live`, { headers: auth })).text();
   check('and pulls in the feed script only there', livePageHtml.includes('/assets/live-'));
   check(
