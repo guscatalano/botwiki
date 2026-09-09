@@ -677,10 +677,13 @@ footer code{font-family:ui-monospace,Menlo,monospace}
 .feed time{color:var(--muted);font-variant-numeric:tabular-nums;font-size:11.5px}
 .feed .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 .feed .s,.feed .d{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.feed .ev.nopage .d{grid-column:3 / -1}
 .feed .dim{color:var(--muted)}
 .feed .ev-write .k,.feed .ev-upload .k{color:var(--accent)}
 .feed .ev-delete .k{color:var(--warn)}
-@media (max-width:640px){.feed .ev{grid-template-columns:62px 56px minmax(0,1fr)}.feed .d{display:none}}
+/* Narrow: the detail column goes, except on rows where it IS the content —
+   hiding it there would leave a row saying only that a search happened. */
+@media (max-width:640px){.feed .ev{grid-template-columns:62px 56px minmax(0,1fr)}.feed .d{display:none}.feed .ev.nopage .d{display:block;grid-column:3 / -1}}
 ${SKIN_CSS}
 ${MARK_CSS}
 ${MASCOT_CSS}
@@ -777,12 +780,14 @@ const LIVE_JS = `(function(){
     // overlap without showing anything twice.
     if(ev.id<=last) return; last=ev.id;
     var li=document.createElement('li');
-    li.className='ev ev-'+ev.kind;
+    // An event with no page — a search, mostly — used to render a dash in the
+    // page column and push its own subject into the next one, which left a gap
+    // exactly where the eye looks for what happened. It gets the space instead.
+    li.className='ev ev-'+ev.kind+(ev.slug?'':' nopage');
     var t=new Date(ev.ts);
-    var slug=ev.slug?'<a href="/w/'+encodeURI(ev.slug)+'">'+esc(ev.slug)+'</a>':'<span class="dim">&mdash;</span>';
     li.innerHTML='<time>'+esc(t.toLocaleTimeString())+'</time>'+
       '<span class="k">'+esc(ev.kind)+'</span>'+
-      '<span class="s">'+slug+'</span>'+
+      (ev.slug?'<span class="s"><a href="/w/'+encodeURI(ev.slug)+'">'+esc(ev.slug)+'</a></span>':'')+
       '<span class="d">'+detail(ev)+'</span>';
     feed.insertBefore(li, feed.firstChild);
     // The page is a window, not a log. Without this a tab left open overnight
