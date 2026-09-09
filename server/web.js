@@ -758,7 +758,16 @@ const LIVE_JS = `(function(){
   function esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':String(s); return d.innerHTML; }
   function detail(ev){
     var d=ev.detail||{};
-    if(ev.kind==='search') return d.redacted?'<span class="dim">query withheld</span>':esc(d.query||'')+(d.tag?' <span class="dim">tag:</span> '+esc(d.tag):'');
+    if(ev.kind==='search'){
+      var who=d.client?' <span class="dim">'+esc(d.client)+'</span>':'';
+      if(d.redacted) return '<span class="dim">query withheld</span>'+who;
+      // Anonymised form: only the words this wiki already publishes, and an
+      // honest count of the ones held back rather than a silent trim.
+      if(d.terms) return (d.terms.length?esc(d.terms.join(' ')):'<span class="dim">nothing publishable</span>')+
+        (d.withheld?' <span class="dim">+'+d.withheld+' withheld</span>':'')+
+        (d.tag?' <span class="dim">tag:</span> '+esc(d.tag):'')+who;
+      return esc(d.query||'')+(d.tag?' <span class="dim">tag:</span> '+esc(d.tag):'')+who;
+    }
     if(ev.kind==='write') return d.created?'created':(d.verified?'updated, verified':'updated');
     if(ev.kind==='upload') return esc(d.mime||'')+(d.size?' <span class="dim">'+Math.round(d.size/1024)+' KB</span>':'');
     return d.client?'<span class="dim">'+esc(d.client)+'</span>':'';
@@ -1812,7 +1821,9 @@ function livePage(res) {
 uploads and votes, from the browser and from agents over MCP alike. Both servers
 write to one log, so this is the whole picture and not just the half that came
 through this process.${
-        PUBLIC ? ' Search terms are withheld here: this wiki does not publish what its readers looked for.' : ''
+        PUBLIC
+          ? ' Searches show only the words this wiki already publishes on its own pages — anything else a searcher typed is dropped before the event is stored, and counted rather than silently trimmed.'
+          : ''
       }</p>
 <ul id="feed" class="feed"></ul>
 <p class="hint">Nothing yet means nothing has happened since you opened this. Open a page in
@@ -3157,6 +3168,7 @@ here recently. An operator will read this one.</p>`
       results: await wiki.search(q, {
         limit: Number(url.searchParams.get('limit')) || 10,
         tag: url.searchParams.get('tag') || undefined,
+        client: ua(req),
       }),
     });
   }
@@ -3606,7 +3618,7 @@ so they are grouped by writer, tool and day instead. That is an approximation an
 instead</a>.</p>${form}`, { q }));
     }
 
-    const hits = await wiki.search(q, { limit: 40 });
+    const hits = await wiki.search(q, { limit: 40, client: ua(req) });
     return html(
       res,
       layout(

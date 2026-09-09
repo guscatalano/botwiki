@@ -3410,10 +3410,54 @@ try {
     })
     .filter(Boolean);
   check(
-    'a public instance withholds search terms',
-    pubEvents.filter((e) => e.kind === 'search').every((e) => e.detail?.redacted === true && !e.detail?.query),
+    'a public instance never publishes a raw query',
+    pubEvents.filter((e) => e.kind === 'search').every((e) => !e.detail?.query),
     JSON.stringify(pubEvents.filter((e) => e.kind === 'search').map((e) => e.detail))
   );
+
+  // The anonymiser, on the case it exists for: a query mixing words the wiki
+  // already publishes with something the searcher brought with them.
+  const pubSearchFeed = readStream(pubBase, 2500);
+  await new Promise((r) => setTimeout(r, 400));
+  await fetch(`${pubBase}/search?q=${encodeURIComponent('proxmox hunter2 zzqxdoesnotexist')}`);
+  const pubSearchBody = await pubSearchFeed;
+  const searchEvents = pubSearchBody.body
+    .split('\n')
+    .filter((l) => l.startsWith('data: '))
+    .map((l) => {
+      try {
+        return JSON.parse(l.slice(6));
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .filter((e) => e.kind === 'search' && e.detail?.terms);
+
+  check('an anonymised search reaches the public feed', searchEvents.length > 0, String(searchEvents.length));
+  const anon = searchEvents[searchEvents.length - 1];
+  check(
+    'it keeps words the wiki already publishes',
+    anon?.detail.terms.includes('proxmox'),
+    JSON.stringify(anon?.detail)
+  );
+  check(
+    'and drops words the searcher brought with them',
+    !anon?.detail.terms.includes('hunter2') && !anon?.detail.terms.includes('zzqxdoesnotexist'),
+    JSON.stringify(anon?.detail)
+  );
+  check('while saying how many it held back', anon?.detail.withheld === 2, JSON.stringify(anon?.detail));
+  check(
+    'nothing in a public search event carries the original string',
+    !JSON.stringify(anon).includes('hunter2'),
+    JSON.stringify(anon)
+  );
+
+  // And the same must be true of what is written to disk, not only of what is
+  // served — the point of anonymising at write time is that an internet-facing
+  // box never holds the raw queries at all.
+  const pubDisk = await fs.readFile(path.join(TMP, '.stats', 'events.db')).catch(() => Buffer.alloc(0));
+  check('and the events on disk do not either', !pubDisk.includes('hunter2'), 'raw query found in events.db');
 
   check('the live page loads', (await fetch(`${base}/live`, { headers: auth })).status === 200);
   check('live is in the top nav, not buried in a menu', (await (await fetch(`${base}/`, { headers: auth })).text()).includes('<a href="/live"'));
