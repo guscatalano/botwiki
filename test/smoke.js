@@ -1300,6 +1300,64 @@ await wiki.deletePage('hosts/partial');
 await wiki.deletePage('hosts/bogus');
 await wiki.deletePage('hosts/old');
 
+// ------------------------------------------------------ stemming & assoc ----
+console.log('\nstemming and query expansion');
+{
+  const { terms, termPairs } = await import('../lib/vectors.js');
+  const { stem } = await import('../lib/stem.js');
+
+  check('a word and its inflections become one term', stem('flapping') === stem('flaps') && stem('flaps') === stem('flapped'), `${stem('flapping')} ${stem('flaps')} ${stem('flapped')}`);
+  check('and so do a verb and its gerund', stem('restoring') === stem('restore'), `${stem('restoring')} vs ${stem('restore')}`);
+  check('plurals collapse', stem('backups') === stem('backup') && stem('networks') === stem('network'));
+
+  // The part that matters for this corpus: an identifier that gets stemmed
+  // stops matching itself, and half of what this wiki holds is identifiers.
+  for (const id of ['igc0', 'vmbr0', 'pve-01', 'wan0']) {
+    check(`an identifier is left alone: ${id}`, terms(id)[0] === id, JSON.stringify(terms(id)));
+  }
+  check('an all-caps error code survives intact', terms('failed with EACCES today').includes('eacces'), JSON.stringify(terms('failed with EACCES today')));
+  check('an acronym survives intact', terms('the DHCP lease').includes('dhcp'));
+  check('but the same letters as a word are still stemmed', terms('the leases expired').includes(stem('leases')));
+  check('term pairs keep the word someone typed', termPairs('restoring backups')[0].raw === 'restoring');
+  check('while keying on the stem', termPairs('restoring backups')[0].stem === stem('restore'));
+
+  // A corpus built so expansion is the only thing that can find the target:
+  // the query term and the target page share no vocabulary at all.
+  for (let i = 1; i <= 4; i++) {
+    await wiki.writePage(`scratch/assoc-filler-${i}`, `Filler ${i}. Unrelated words about paint and weather.\n`, { title: `Filler ${i}` });
+  }
+  // zorbtrunk and widgetnet co-occur on two pages, so the corpus learns they
+  // are related — the way `network` and `igc0` are related on the real wiki.
+  await wiki.writePage('scratch/assoc-both-1', 'The zorbtrunk carries the widgetnet uplink.\n', { title: 'Both one' });
+  await wiki.writePage('scratch/assoc-both-2', 'When the zorbtrunk drops, the widgetnet stops.\n', { title: 'Both two' });
+  // The target mentions only widgetnet. Nothing here says zorbtrunk.
+  await wiki.writePage('scratch/assoc-target', 'The widgetnet uplink is checked hourly by the monitor.\n', { title: 'Target' });
+
+  await wiki.reindex();
+  const assoc = await import('../lib/assoc.js');
+  assoc.reset();
+
+  const hits = await wiki.search('zorbtrunk', { limit: 10 });
+  const slugs = hits.map((h) => h.slug);
+  check('a thin search reaches a page sharing none of its words', slugs.includes('scratch/assoc-target'), slugs.join(', '));
+  check('and says which results the query did not ask for', hits.find((h) => h.slug === 'scratch/assoc-target')?.related === true);
+  check(
+    'while the pages that literally matched still rank first',
+    slugs.indexOf('scratch/assoc-both-1') < slugs.indexOf('scratch/assoc-target'),
+    slugs.join(', ')
+  );
+
+  // Expansion must not fire when the query already found plenty, or borrowed
+  // words start outvoting the ones someone actually typed.
+  const plenty = await wiki.search('widgetnet', { limit: 10 });
+  check('a search with enough results borrows nothing', plenty.every((h) => !h.related), plenty.map((h) => `${h.slug}${h.related ? '*' : ''}`).join(', '));
+
+  for (const s of ['assoc-filler-1', 'assoc-filler-2', 'assoc-filler-3', 'assoc-filler-4', 'assoc-both-1', 'assoc-both-2', 'assoc-target']) {
+    await wiki.deletePage(`scratch/${s}`);
+  }
+  assoc.reset();
+}
+
 // -------------------------------------------------------------- servers ----
 function start(script, extraEnv) {
   const child = spawn(process.execPath, [script], {
