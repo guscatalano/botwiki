@@ -3453,6 +3453,36 @@ try {
     JSON.stringify(anon)
   );
 
+  // A shape the per-token rule cannot see. Tokenising an email splits it, and
+  // the domain is very often in the corpus — so the vocabulary rule alone would
+  // clear "example.com" as an ordinary word and publish a fragment of somebody's
+  // address. Whole query withheld instead.
+  for (const [label, q] of [
+    ['an email address', 'proxmox me@example.com'],
+    ['a url', 'proxmox https://example.com/x'],
+    ['an ip address', 'proxmox 192.168.6.41'],
+    ['a long digit run', 'proxmox 4111 1111 1111 1111'],
+    ['a pasted token', 'proxmox AAAAB3NzaC1yc2EAAAADAQABAAAB'],
+  ]) {
+    const s = readStream(pubBase, 2000);
+    await new Promise((r) => setTimeout(r, 300));
+    await fetch(`${pubBase}/search?q=${encodeURIComponent(q)}`);
+    const body = (await s).body;
+    const evs = body
+      .split('\n')
+      .filter((l) => l.startsWith('data: '))
+      .map((l) => {
+        try {
+          return JSON.parse(l.slice(6));
+        } catch {
+          return null;
+        }
+      })
+      .filter((e) => e && e.kind === 'search');
+    const latest = evs[evs.length - 1];
+    check(`${label} withholds the whole query`, latest?.detail?.redacted === true && !latest?.detail?.terms, JSON.stringify(latest?.detail));
+  }
+
   // And the same must be true of what is written to disk, not only of what is
   // served — the point of anonymising at write time is that an internet-facing
   // box never holds the raw queries at all.
